@@ -64,9 +64,16 @@ class UartBuffer:
     def tail(self, n: int) -> bytes:
         return self.slice(self.total - n, self.total)
 
-    def search(self, pattern: re.Pattern[bytes], cursor: int) -> Match | None:
+    def last_line_end(self) -> int:
+        """Absolute offset just past the last newline (== start if there is none)."""
+        return self.start + self._buf.rfind(b"\n") + 1
+
+    def search(self, pattern: re.Pattern[bytes], cursor: int, end: int | None = None) -> Match | None:
         begin = self._clamp(cursor)
-        m = pattern.search(self._buf, begin - self.start)
+        stop = self._clamp(self.total if end is None else end)
+        if stop < begin:
+            return None
+        m = pattern.search(self._buf, begin - self.start, stop - self.start)
         if m is None:
             return None
         return Match(m.start() + self.start, m.end() + self.start, m)

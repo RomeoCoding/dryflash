@@ -1,0 +1,30 @@
+From 985287b4c117979d376ce7b26eda0c89a945d920 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Tue, 29 Sep 2026 17:40:40 +0300
+Subject: [PATCH 4/4] hw/xtensa/esp32: build i2c-sim-sensor for the esp32
+ machine
+
+The esp32 machine is the only Espressif machine with an I2C controller
+model; imply the host-driven I2C register device so it is available by
+default for sensor-driven firmware testing.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/xtensa/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/hw/xtensa/Kconfig b/hw/xtensa/Kconfig
+index 5866207..ce81bc8 100644
+--- a/hw/xtensa/Kconfig
++++ b/hw/xtensa/Kconfig
+@@ -30,6 +30,7 @@ config XTENSA_ESP32
+     select OPENCORES_ETH
+     select DWC_SDMMC
+     select TMP105
++    imply I2C_SIM_SENSOR
+     select LED
+     select ESP_RGB
+ 
+-- 
+2.55.0.windows.3
+

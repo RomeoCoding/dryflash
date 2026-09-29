@@ -1,0 +1,612 @@
+From 2e5e378ec766ad942b71f77832b417035f0b89bb Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Tue, 29 Sep 2026 17:40:39 +0300
+Subject: [PATCH 2/4] hw/sensor: add i2c-sim-sensor, a host-driven generic I2C
+ register device
+
+Emulating firmware that reads I2C sensors needs realistic, time-varying
+sensor data, and writing a C model per chip does not scale. This device
+is a 256-byte register file behind the common pointer-then-auto-increment
+protocol whose contents are supplied by a host process over a chardev.
+Each update carries a QEMU_CLOCK_VIRTUAL timestamp and is applied by a
+virtual-clock timer, so under -icount the guest sees the same values on
+every run regardless of host speed; the device never blocks on the host.
+
+A little generic structure covers common sensor and ADC chips without
+chip-specific C: a register stride (16-bit register chips), one bank
+selector (a register field choosing which bank a data range is read
+from, e.g. ADS1115 MUX/PGA), read-set bit masks (ready flags) and
+read-only ranges. Guest register writes are reported to the host.
+
+Example:
+  -chardev socket,id=s0,path=/tmp/s0.sock,server=on,wait=off
+  -device i2c-sim-sensor,bus=i2c-bus.0,address=0x53,chardev=s0
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/Kconfig          |   5 +
+ hw/sensor/i2c_sim_sensor.c | 549 +++++++++++++++++++++++++++++++++++++
+ hw/sensor/meson.build      |   1 +
+ 3 files changed, 555 insertions(+)
+ create mode 100644 hw/sensor/i2c_sim_sensor.c
+
+diff --git a/hw/sensor/Kconfig b/hw/sensor/Kconfig
+index bc6331b..80fce28 100644
+--- a/hw/sensor/Kconfig
++++ b/hw/sensor/Kconfig
+@@ -43,3 +43,8 @@ config ISL_PMBUS_VR
+ config MAX31785
+     bool
+     depends on PMBUS
++
++config I2C_SIM_SENSOR
++    bool
++    depends on I2C
++    default y if I2C_DEVICES
+diff --git a/hw/sensor/i2c_sim_sensor.c b/hw/sensor/i2c_sim_sensor.c
+new file mode 100644
+index 0000000..95ef904
+--- /dev/null
++++ b/hw/sensor/i2c_sim_sensor.c
+@@ -0,0 +1,549 @@
++/*
++ * Host-driven generic I2C register device ("i2c-sim-sensor")
++ *
++ * A 256-byte register file behind the usual I2C register protocol: the
++ * first byte of a write transfer sets the register pointer, further bytes
++ * are written from there, and reads return bytes from the pointer on, with
++ * auto-increment.  Register contents come from a host process over a
++ * chardev.  Every update carries a QEMU_CLOCK_VIRTUAL timestamp and is
++ * applied by a virtual-clock timer at that time, so a run under -icount
++ * gives the same guest-visible values however fast or slow the host is.
++ * The device never waits for the host.
++ *
++ * Sensor semantics (scaling, ranges, conversions) stay on the host.  The
++ * device only knows enough structure to cover common sensor and ADC chips:
++ *
++ *  - stride: bytes per register address (2 for chips with 16-bit
++ *    registers such as the ADS1115);
++ *  - one bank selector: (bits of a 1- or 2-byte register) >> shift picks
++ *    which bank a range of data registers is read from, e.g. the ADS1115
++ *    MUX and PGA fields select a conversion result;
++ *  - read-set: bits forced to one when read (status "ready" flags);
++ *  - read-only: byte ranges the guest cannot write (IDs, status).
++ *
++ * Host to device, one command per line:
++ *   W <virtual_ns> <bank> <offset> <hex bytes>
++ *       write up to 32 bytes at byte offset <offset> of the register file
++ *       (bank -1) or of data bank <bank>, at virtual time <virtual_ns>.
++ *       Times in the past (including 0) apply immediately.
++ *   S <seq>
++ *       reply "A <seq> <now_ns>" once all earlier lines are processed.
++ * Device to host:
++ *   A <seq> <now_ns>                   sync acknowledgement
++ *   G <now_ns> <offset> <hex bytes>    the guest wrote these bytes
++ *   E <message>                        malformed command
++ *
++ * Copyright (c) 2026 Romeo Mattar
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/cutils.h"
++#include "qemu/timer.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/i2c/i2c.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
++#include "migration/vmstate.h"
++#include "qom/object.h"
++
++#define TYPE_I2C_SIM_SENSOR "i2c-sim-sensor"
++OBJECT_DECLARE_SIMPLE_TYPE(I2CSimSensorState, I2C_SIM_SENSOR)
++
++#define SIM_REGS            256
++#define SIM_MAX_BANKS       64
++#define SIM_MAX_UPDATE      32
++#define SIM_LINE_MAX        512
++#define SIM_MAX_MASKS       8
++#define SIM_MAX_PENDING     (1 << 20)
++
++typedef struct SimUpdate {
++    int64_t when_ns;
++    int bank;                   /* -1: register file */
++    uint8_t offset;
++    uint8_t len;
++    uint8_t data[SIM_MAX_UPDATE];
++} SimUpdate;
++
++struct I2CSimSensorState {
++    I2CSlave parent_obj;
++
++    CharBackend chr;
++    QEMUTimer *timer;
++    GQueue pending;             /* SimUpdate *, sorted by when_ns */
++
++    uint8_t regs[SIM_REGS];
++    uint8_t *banks;             /* nbanks * bank_size bytes */
++    unsigned nbanks;
++    unsigned bank_size;
++
++    uint8_t read_set_off[SIM_MAX_MASKS];
++    uint8_t read_set_mask[SIM_MAX_MASKS];
++    unsigned n_read_set;
++    bool read_only[SIM_REGS];
++
++    /* Transfer state */
++    uint8_t pointer;            /* byte offset */
++    bool expect_pointer;
++    int wr_first;               /* guest-written range, -1: none */
++    int wr_last;
++
++    char line[SIM_LINE_MAX];
++    unsigned line_len;
++    bool line_overflow;
++
++    /* Properties */
++    uint8_t stride;
++    uint8_t bank_reg;
++    uint8_t bank_width;
++    uint16_t bank_mask;
++    uint8_t bank_shift;
++    uint8_t bank_first;
++    uint8_t bank_last;
++    char *read_set;
++    char *read_only_str;
++};
++
++static void sim_send(I2CSimSensorState *s, const char *fmt, ...)
++    G_GNUC_PRINTF(2, 3);
++
++static void sim_send(I2CSimSensorState *s, const char *fmt, ...)
++{
++    g_autofree char *msg = NULL;
++    va_list ap;
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        return;
++    }
++    va_start(ap, fmt);
++    msg = g_strdup_vprintf(fmt, ap);
++    va_end(ap);
++    /* Non-blocking: a host that stops reading loses notices, QEMU runs on */
++    qemu_chr_fe_write(&s->chr, (const uint8_t *)msg, strlen(msg));
++}
++
++static unsigned sim_current_bank(I2CSimSensorState *s)
++{
++    uint16_t sel = s->regs[s->bank_reg];
++
++    if (s->bank_width == 2) {
++        sel = (sel << 8) | s->regs[(uint8_t)(s->bank_reg + 1)];
++    }
++    return ((sel & s->bank_mask) >> s->bank_shift) % s->nbanks;
++}
++
++static bool sim_is_banked(I2CSimSensorState *s, uint8_t off)
++{
++    return s->nbanks && off >= s->bank_first && off <= s->bank_last;
++}
++
++static uint8_t sim_read_byte(I2CSimSensorState *s, uint8_t off)
++{
++    uint8_t v;
++    unsigned i;
++
++    if (sim_is_banked(s, off)) {
++        v = s->banks[sim_current_bank(s) * s->bank_size + off - s->bank_first];
++    } else {
++        v = s->regs[off];
++    }
++    for (i = 0; i < s->n_read_set; i++) {
++        if (s->read_set_off[i] == off) {
++            v |= s->read_set_mask[i];
++        }
++    }
++    return v;
++}
++
++static void sim_apply(I2CSimSensorState *s, const SimUpdate *u)
++{
++    unsigned i;
++
++    for (i = 0; i < u->len; i++) {
++        uint8_t off = u->offset + i;
++
++        if (u->bank < 0) {
++            s->regs[off] = u->data[i];
++        } else if (sim_is_banked(s, off)) {
++            s->banks[u->bank * s->bank_size + off - s->bank_first] = u->data[i];
++        }
++    }
++}
++
++static void sim_rearm(I2CSimSensorState *s)
++{
++    SimUpdate *head = g_queue_peek_head(&s->pending);
++
++    if (head) {
++        timer_mod(s->timer, head->when_ns);
++    } else {
++        timer_del(s->timer);
++    }
++}
++
++static void sim_timer_cb(void *opaque)
++{
++    I2CSimSensorState *s = opaque;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    SimUpdate *u;
++
++    while ((u = g_queue_peek_head(&s->pending)) && u->when_ns <= now) {
++        sim_apply(s, g_queue_pop_head(&s->pending));
++        g_free(u);
++    }
++    sim_rearm(s);
++}
++
++static gint sim_update_cmp(gconstpointer a, gconstpointer b, gpointer opaque)
++{
++    const SimUpdate *ua = a, *ub = b;
++
++    /* Equal timestamps keep arrival order (g_queue_insert_sorted is stable) */
++    return ua->when_ns < ub->when_ns ? -1 : ua->when_ns > ub->when_ns;
++}
++
++static void sim_queue(I2CSimSensorState *s, SimUpdate *u)
++{
++    SimUpdate *tail = g_queue_peek_tail(&s->pending);
++
++    /* Hosts normally send in time order, which makes this an append */
++    if (!tail || tail->when_ns <= u->when_ns) {
++        g_queue_push_tail(&s->pending, u);
++    } else {
++        g_queue_insert_sorted(&s->pending, u, sim_update_cmp, NULL);
++    }
++    sim_rearm(s);
++}
++
++static int sim_parse_hex(const char *hex, uint8_t *out, unsigned max)
++{
++    size_t n = strlen(hex);
++    unsigned i;
++
++    if (n == 0 || n % 2 || n / 2 > max) {
++        return -1;
++    }
++    for (i = 0; i < n / 2; i++) {
++        int hi = g_ascii_xdigit_value(hex[2 * i]);
++        int lo = g_ascii_xdigit_value(hex[2 * i + 1]);
++
++        if (hi < 0 || lo < 0) {
++            return -1;
++        }
++        out[i] = hi << 4 | lo;
++    }
++    return n / 2;
++}
++
++static void sim_command(I2CSimSensorState *s, char *line)
++{
++    g_auto(GStrv) f = g_strsplit_set(g_strstrip(line), " \t", -1);
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    guint n = g_strv_length(f);
++
++    if (n == 0 || !f[0][0]) {
++        return;
++    }
++    if (!strcmp(f[0], "S") && n == 2) {
++        sim_send(s, "A %s %" PRId64 "\n", f[1], now);
++    } else if (!strcmp(f[0], "W") && n == 5) {
++        g_autofree SimUpdate *u = g_new0(SimUpdate, 1);
++        int64_t bank, off;
++        int len;
++
++        len = sim_parse_hex(f[4], u->data, SIM_MAX_UPDATE);
++        if (qemu_strtoi64(f[1], NULL, 10, &u->when_ns) ||
++            qemu_strtoi64(f[2], NULL, 10, &bank) ||
++            qemu_strtoi64(f[3], NULL, 0, &off) ||
++            bank < -1 || bank >= (int64_t)s->nbanks ||
++            off < 0 || off >= SIM_REGS || len < 0) {
++            sim_send(s, "E bad W command\n");
++            return;
++        }
++        u->bank = bank;
++        u->offset = off;
++        u->len = len;
++        if (u->when_ns <= now) {
++            sim_apply(s, u);
++        } else if (g_queue_get_length(&s->pending) >= SIM_MAX_PENDING) {
++            sim_send(s, "E update queue full\n");
++        } else {
++            sim_queue(s, g_steal_pointer(&u));
++        }
++    } else {
++        sim_send(s, "E unknown command\n");
++    }
++}
++
++static int sim_can_receive(void *opaque)
++{
++    I2CSimSensorState *s = opaque;
++
++    return SIM_LINE_MAX - s->line_len;
++}
++
++static void sim_receive(void *opaque, const uint8_t *buf, int size)
++{
++    I2CSimSensorState *s = opaque;
++    int i;
++
++    for (i = 0; i < size; i++) {
++        if (buf[i] == '\n') {
++            s->line[s->line_len] = '\0';
++            if (s->line_overflow) {
++                sim_send(s, "E line too long\n");
++            } else {
++                sim_command(s, s->line);
++            }
++            s->line_len = 0;
++            s->line_overflow = false;
++        } else if (s->line_len < SIM_LINE_MAX - 1) {
++            s->line[s->line_len++] = buf[i];
++        } else {
++            s->line_overflow = true;
++        }
++    }
++}
++
++static void sim_notify_guest_write(I2CSimSensorState *s)
++{
++    GString *hex;
++    int i;
++
++    if (s->wr_first < 0) {
++        return;
++    }
++    hex = g_string_new(NULL);
++    for (i = s->wr_first; i <= s->wr_last; i++) {
++        g_string_append_printf(hex, "%02x", s->regs[i]);
++    }
++    sim_send(s, "G %" PRId64 " %d %s\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++             s->wr_first, hex->str);
++    g_string_free(hex, true);
++    s->wr_first = -1;
++}
++
++static int sim_event(I2CSlave *i2c, enum i2c_event event)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
++
++    switch (event) {
++    case I2C_START_SEND:
++        s->expect_pointer = true;
++        break;
++    case I2C_FINISH:
++        sim_notify_guest_write(s);
++        break;
++    default:
++        break;
++    }
++    return 0;
++}
++
++static int sim_send_byte(I2CSlave *i2c, uint8_t data)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
++
++    if (s->expect_pointer) {
++        s->pointer = data * s->stride;
++        s->expect_pointer = false;
++        return 0;
++    }
++    if (!s->read_only[s->pointer] && !sim_is_banked(s, s->pointer)) {
++        s->regs[s->pointer] = data;
++        if (s->wr_first < 0) {
++            s->wr_first = s->wr_last = s->pointer;
++        } else {
++            s->wr_first = MIN(s->wr_first, s->pointer);
++            s->wr_last = MAX(s->wr_last, s->pointer);
++        }
++    }
++    s->pointer++;
++    return 0;
++}
++
++static uint8_t sim_recv_byte(I2CSlave *i2c)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
++
++    return sim_read_byte(s, s->pointer++);
++}
++
++static bool sim_parse_read_set(I2CSimSensorState *s, Error **errp)
++{
++    g_auto(GStrv) items = NULL;
++    guint i;
++
++    if (!s->read_set || !*s->read_set) {
++        return true;
++    }
++    items = g_strsplit(s->read_set, ",", -1);
++    for (i = 0; items[i]; i++) {
++        uint64_t off, mask;
++        char *colon = strchr(items[i], ':');
++
++        if (i >= SIM_MAX_MASKS || !colon) {
++            error_setg(errp, "read-set: expected up to %d 'offset:mask' items",
++                       SIM_MAX_MASKS);
++            return false;
++        }
++        *colon = '\0';
++        if (qemu_strtou64(items[i], NULL, 0, &off) ||
++            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
++            off >= SIM_REGS || mask > 0xff) {
++            error_setg(errp, "read-set: bad item '%s'", items[i]);
++            return false;
++        }
++        s->read_set_off[i] = off;
++        s->read_set_mask[i] = mask;
++        s->n_read_set = i + 1;
++    }
++    return true;
++}
++
++static bool sim_parse_read_only(I2CSimSensorState *s, Error **errp)
++{
++    g_auto(GStrv) items = NULL;
++    guint i;
++
++    if (!s->read_only_str || !*s->read_only_str) {
++        return true;
++    }
++    items = g_strsplit(s->read_only_str, ",", -1);
++    for (i = 0; items[i]; i++) {
++        uint64_t first, last;
++        char *dash = strchr(items[i], '-');
++
++        if (dash) {
++            *dash = '\0';
++        }
++        if (qemu_strtou64(items[i], NULL, 0, &first) ||
++            (dash && qemu_strtou64(dash + 1, NULL, 0, &last))) {
++            error_setg(errp, "read-only: bad range '%s'", items[i]);
++            return false;
++        }
++        if (!dash) {
++            last = first;
++        }
++        if (first > last || last >= SIM_REGS) {
++            error_setg(errp, "read-only: range out of bounds");
++            return false;
++        }
++        while (first <= last) {
++            s->read_only[first++] = true;
++        }
++    }
++    return true;
++}
++
++static void sim_realize(DeviceState *dev, Error **errp)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
++
++    if (s->stride == 0) {
++        error_setg(errp, "stride must be at least 1");
++        return;
++    }
++    if (s->bank_width > 2) {
++        error_setg(errp, "bank-width must be 0 (no banking), 1 or 2");
++        return;
++    }
++    if (s->bank_width) {
++        if (!s->bank_mask || s->bank_first > s->bank_last) {
++            error_setg(errp, "banking needs bank-mask and "
++                       "bank-first <= bank-last");
++            return;
++        }
++        s->nbanks = (s->bank_mask >> s->bank_shift) + 1;
++        if (s->nbanks > SIM_MAX_BANKS) {
++            error_setg(errp, "bank selector allows %u banks, at most %d",
++                       s->nbanks, SIM_MAX_BANKS);
++            return;
++        }
++        s->bank_size = s->bank_last - s->bank_first + 1;
++        s->banks = g_malloc0(s->nbanks * s->bank_size);
++    }
++    if (!sim_parse_read_set(s, errp) || !sim_parse_read_only(s, errp)) {
++        return;
++    }
++    g_queue_init(&s->pending);
++    s->wr_first = -1;
++    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sim_timer_cb, s);
++    qemu_chr_fe_set_handlers(&s->chr, sim_can_receive, sim_receive, NULL,
++                             NULL, s, NULL, true);
++}
++
++static void sim_unrealize(DeviceState *dev)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
++
++    qemu_chr_fe_deinit(&s->chr, false);
++    timer_free(s->timer);
++    g_queue_clear_full(&s->pending, g_free);
++    g_free(s->banks);
++}
++
++static void sim_reset_hold(Object *obj, ResetType type)
++{
++    I2CSimSensorState *s = I2C_SIM_SENSOR(obj);
++
++    /*
++     * Register contents belong to the host-side model and survive a reset;
++     * only the transfer state is cleared.
++     */
++    s->pointer = 0;
++    s->expect_pointer = false;
++    s->wr_first = -1;
++}
++
++static const VMStateDescription vmstate_i2c_sim_sensor = {
++    .name = TYPE_I2C_SIM_SENSOR,
++    /* Pending host updates live outside the guest state */
++    .unmigratable = 1,
++};
++
++static Property sim_properties[] = {
++    DEFINE_PROP_CHR("chardev", I2CSimSensorState, chr),
++    DEFINE_PROP_UINT8("stride", I2CSimSensorState, stride, 1),
++    DEFINE_PROP_UINT8("bank-reg", I2CSimSensorState, bank_reg, 0),
++    DEFINE_PROP_UINT8("bank-width", I2CSimSensorState, bank_width, 0),
++    DEFINE_PROP_UINT16("bank-mask", I2CSimSensorState, bank_mask, 0),
++    DEFINE_PROP_UINT8("bank-shift", I2CSimSensorState, bank_shift, 0),
++    DEFINE_PROP_UINT8("bank-first", I2CSimSensorState, bank_first, 0),
++    DEFINE_PROP_UINT8("bank-last", I2CSimSensorState, bank_last, 0),
++    DEFINE_PROP_STRING("read-set", I2CSimSensorState, read_set),
++    DEFINE_PROP_STRING("read-only", I2CSimSensorState, read_only_str),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void sim_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    dc->desc = "Generic I2C register device fed by a host over a chardev";
++    dc->realize = sim_realize;
++    dc->unrealize = sim_unrealize;
++    dc->vmsd = &vmstate_i2c_sim_sensor;
++    rc->phases.hold = sim_reset_hold;
++    k->event = sim_event;
++    k->send = sim_send_byte;
++    k->recv = sim_recv_byte;
++    device_class_set_props(dc, sim_properties);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static const TypeInfo sim_types[] = {
++    {
++        .name          = TYPE_I2C_SIM_SENSOR,
++        .parent        = TYPE_I2C_SLAVE,
++        .instance_size = sizeof(I2CSimSensorState),
++        .class_init    = sim_class_init,
++    },
++};
++
++DEFINE_TYPES(sim_types)
+diff --git a/hw/sensor/meson.build b/hw/sensor/meson.build
+index 420fdc3..cf6260e 100644
+--- a/hw/sensor/meson.build
++++ b/hw/sensor/meson.build
+@@ -8,3 +8,4 @@ system_ss.add(when: 'CONFIG_MAX34451', if_true: files('max34451.c'))
+ system_ss.add(when: 'CONFIG_LSM303DLHC_MAG', if_true: files('lsm303dlhc_mag.c'))
+ system_ss.add(when: 'CONFIG_ISL_PMBUS_VR', if_true: files('isl_pmbus_vr.c'))
+ system_ss.add(when: 'CONFIG_MAX31785', if_true: files('max31785.c'))
++system_ss.add(when: 'CONFIG_I2C_SIM_SENSOR', if_true: files('i2c_sim_sensor.c'))
+-- 
+2.55.0.windows.3
+

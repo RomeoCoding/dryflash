@@ -51,3 +51,14 @@ def test_tail_and_context():
     b.append(b"line1\nline2\nline3\n")
     assert b.tail(6) == b"line3\n"
     assert b.slice(6, 12) == b"line2\n"
+
+
+def test_search_can_stop_at_the_last_complete_line():
+    b = UartBuffer(capacity=1024)
+    b.append(b"value=1\nvalue=2")          # second line still arriving
+    rx = re.compile(rb"value=(\d+)")
+    first = b.search(rx, 0, b.last_line_end())
+    assert first.group(1) == b"1"
+    assert b.search(rx, first.end_offset, b.last_line_end()) is None
+    b.append(b"3\n")
+    assert b.search(rx, first.end_offset, b.last_line_end()).group(1) == b"23"

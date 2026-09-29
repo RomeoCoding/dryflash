@@ -9,6 +9,7 @@ EXPECTED_TOOLS = {
     "project_build", "emu_start", "emu_stop", "emu_status", "emu_reset", "emu_run_for", "emu_pause",
     "emu_continue", "uart_read", "uart_write", "uart_expect", "gdb_break", "gdb_continue", "gdb_step",
     "gdb_backtrace", "gdb_registers", "gdb_read_memory", "gdb_eval", "decode_panic", "test_run",
+    "sensor_set", "sensor_stream",
 }
 
 

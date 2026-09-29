@@ -55,7 +55,8 @@ def build_qemu_cmdline(o: QemuOptions) -> list[str]:
             "-global", f"driver=nvram.{t.machine}.efuse,property=drive,value=efuse",
         ]
     if o.deterministic:
-        cmd += ["-icount", f"shift={o.icount_shift},sleep=off"]
+        # -seed: the RNG peripheral reads qemu_guest_getrandom, which is host entropy otherwise.
+        cmd += ["-icount", f"shift={o.icount_shift},sleep=off", "-seed", "1"]
     elif t.arch == "riscv32":
         cmd += ["-icount", "3"]  # what idf.py qemu uses for the RISC-V chips
     if not o.reboot:

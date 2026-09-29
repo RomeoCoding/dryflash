@@ -22,6 +22,9 @@ from .panic import decode_panic_text, make_addr2line_symbolizer
 from .qmp import QmpError
 from .runner import run_scenario
 from .scenario import ScenarioError, load_scenario
+from .sensors.link import LinkError
+from .sensors.models import SensorSpecError
+from .sensors.waveform import WaveformError
 from .session import SessionConfig, SessionError, SessionManager, SessionNotFound
 from .targets import UnknownTargetError, get_target
 
@@ -40,6 +43,7 @@ Targets: esp32 (full support incl. sensors), esp32c3 and esp32s3 (no sensors). N
 """
 
 _EXPECTED = (SessionError, SessionNotFound, ScenarioError, GdbError, QmpError, UnknownTargetError,
+             SensorSpecError, WaveformError, LinkError,
              ValueError, FileNotFoundError, TimeoutError, asyncio.TimeoutError)
 
 
@@ -225,16 +229,18 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
 
     @tool
     async def uart_expect(session_id: str, pattern: str, timeout_s: float = 10.0,
-                          cursor: int | None = None) -> dict[str, Any]:
+                          cursor: int | None = None, complete_lines: bool = True) -> dict[str, Any]:
         """Wait until UART output matches a Python regex; return the match, groups and context.
 
         Searches from cursor (default: all retained output), so pass the cursor from a previous
-        call to only match new output. Output streams in chunks: anchor with \\n if you need a
-        complete line (e.g. 'value=(\\d+)\\r?\\n'). On timeout returns matched=false with the last
+        call to only match new output. By default only complete lines are searched, so
+        'value=(\\d+)' never matches a half-received line; set complete_lines=false to match a
+        prompt that has no trailing newline. On timeout returns matched=false with the last
         output; if the session exited, the reason says so (then decode_panic).
         """
         re.compile(pattern)
-        return await mgr.get(session_id).uart_expect(pattern, timeout=min(timeout_s, 600), cursor=cursor)
+        return await mgr.get(session_id).uart_expect(pattern, timeout=min(timeout_s, 600), cursor=cursor,
+                                                     complete_lines=complete_lines)
 
     # ------------------------------------------------------------------ debugger
     async def _dbg(session_id: str):
@@ -380,6 +386,40 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         finally:
             await mgr.stop(s.id)
         return result
+
+    # ------------------------------------------------------------------ sensors (sensors image)
+    def _hub(session_id: str):
+        s = mgr.get(session_id)
+        if s.sensors is None or not s.sensors.models:
+            raise ToolError("this session has no injected sensors: declare them in emu_start(sensors=[...]) "
+                            "(esp32 on the esp32-sim-mcp-sensors image)")
+        return s.sensors
+
+    @tool
+    async def sensor_set(session_id: str, sensor: str, values: dict[str, Any],
+                         at_ms: float | None = None) -> dict[str, Any]:
+        """Change what an injected sensor reports, from virtual time at_ms (default: now) onwards.
+
+        values maps channel -> number or waveform spec: adxl345 channels x/y/z in g, ads1115 ain0..ain3
+        in volts, generic sensors their declared channels. Channels not given keep their waveform.
+        E.g. {"z": 1.0} or {"x": {"type": "sine", "freq_hz": 50, "amplitude": 0.2}}.
+        For byte-identical deterministic runs give an explicit at_ms (or call this while paused,
+        e.g. after emu_run_for), because "now" on a running board depends on host timing.
+        Next: uart_expect for the firmware's reaction.
+        """
+        return await _hub(session_id).set(sensor, values=values, at_ms=at_ms)
+
+    @tool
+    async def sensor_stream(session_id: str, sensor: str, waveform: dict[str, Any],
+                            at_ms: float | None = None) -> dict[str, Any]:
+        """Feed a sensor a time-varying source from at_ms (default: now): per-channel waveform specs.
+
+        Sources: {"type": "csv", "path": "rec.csv", "column": "x", "loop": true} (recorded samples,
+        path relative to the project), sine / noise / step / rotation (imbalance 1x line:
+        {"type": "rotation", "rpm": 1800, "amplitude": 0.3, "harmonics": [[2, 0.1]]}) or a list to
+        sum several. Samples are resampled onto the sensor's rate_hz grid in virtual time.
+        """
+        return await _hub(session_id).stream(sensor, waveform=waveform, at_ms=at_ms)
 
     return app
 

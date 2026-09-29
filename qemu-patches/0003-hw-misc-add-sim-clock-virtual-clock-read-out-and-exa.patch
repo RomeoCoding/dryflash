@@ -1,0 +1,247 @@
+From 5384cb456f684bead2006fd2be38d21bfc7134db Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Tue, 29 Sep 2026 17:40:40 +0300
+Subject: [PATCH 3/4] hw/misc: add sim-clock, virtual clock read-out and
+ exact-time stop
+
+QMP can pause a VM, but not at a given virtual time outside of
+record/replay. A host that drives a simulation (feeding sensor data,
+running a test for N ms of guest time) needs exactly that. sim-clock is
+a bus-less device with a chardev: the host can read QEMU_CLOCK_VIRTUAL
+and ask for the VM to be paused when it reaches a given time. Under
+-icount the vCPUs get no budget past a pending virtual deadline, so the
+stop lands on the same guest instruction on every run. Resuming is left
+to QMP "cont".
+
+Example:
+  -chardev socket,id=clk,path=/tmp/clk.sock,server=on,wait=off
+  -device sim-clock,chardev=clk
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/misc/Kconfig     |   4 +
+ hw/misc/meson.build |   1 +
+ hw/misc/sim_clock.c | 187 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 192 insertions(+)
+ create mode 100644 hw/misc/sim_clock.c
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 1f1baa5..7836bd4 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -216,3 +216,7 @@ config XLNX_VERSAL_TRNG
+     bool
+ 
+ source macio/Kconfig
++
++config SIM_CLOCK
++    bool
++    default y
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 4c2b5b3..fb2547e 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -5,6 +5,7 @@ system_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
+ system_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
+ system_ss.add(when: 'CONFIG_PCI_TESTDEV', if_true: files('pci-testdev.c'))
+ system_ss.add(when: 'CONFIG_UNIMP', if_true: files('unimp.c'))
++system_ss.add(when: 'CONFIG_SIM_CLOCK', if_true: files('sim_clock.c'))
+ system_ss.add(when: 'CONFIG_EMPTY_SLOT', if_true: files('empty_slot.c'))
+ system_ss.add(when: 'CONFIG_LED', if_true: files('led.c'))
+ system_ss.add(when: 'CONFIG_PVPANIC_COMMON', if_true: files('pvpanic.c'))
+diff --git a/hw/misc/sim_clock.c b/hw/misc/sim_clock.c
+new file mode 100644
+index 0000000..94e0344
+--- /dev/null
++++ b/hw/misc/sim_clock.c
+@@ -0,0 +1,187 @@
++/*
++ * Virtual clock control for host-driven simulation ("sim-clock")
++ *
++ * Lets a host process read QEMU_CLOCK_VIRTUAL and pause the VM at an exact
++ * virtual time, which QMP cannot do outside record/replay.  Under -icount
++ * the stop lands on the same guest instruction on every run, so a host can
++ * run a guest in fixed virtual-time slices (for example to feed it sensor
++ * data) without making the run depend on host speed.  Resuming is left to
++ * QMP "cont".
++ *
++ * Host to device, one command per line:
++ *   N <seq>            reply "T <seq> <now_ns>"
++ *   S <seq> <ns>       pause the VM when the virtual clock reaches <ns>,
++ *                      replacing an earlier request; replies "T <seq> <now_ns>"
++ *   C <seq>            cancel the pending stop; replies "T <seq> <now_ns>"
++ * Device to host:
++ *   X <now_ns>         the VM was paused by a stop request
++ *   E <message>        malformed command
++ *
++ * Copyright (c) 2026 Romeo Mattar
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/cutils.h"
++#include "qemu/timer.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/qdev-core.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
++#include "sysemu/runstate.h"
++#include "migration/vmstate.h"
++#include "qom/object.h"
++
++#define TYPE_SIM_CLOCK "sim-clock"
++OBJECT_DECLARE_SIMPLE_TYPE(SimClockState, SIM_CLOCK)
++
++#define SIM_CLOCK_LINE_MAX 128
++
++struct SimClockState {
++    DeviceState parent_obj;
++
++    CharBackend chr;
++    QEMUTimer *timer;
++    char line[SIM_CLOCK_LINE_MAX];
++    unsigned line_len;
++    bool line_overflow;
++};
++
++static void sim_clock_send(SimClockState *s, const char *fmt, ...)
++    G_GNUC_PRINTF(2, 3);
++
++static void sim_clock_send(SimClockState *s, const char *fmt, ...)
++{
++    g_autofree char *msg = NULL;
++    va_list ap;
++
++    va_start(ap, fmt);
++    msg = g_strdup_vprintf(fmt, ap);
++    va_end(ap);
++    qemu_chr_fe_write(&s->chr, (const uint8_t *)msg, strlen(msg));
++}
++
++static void sim_clock_expired(void *opaque)
++{
++    SimClockState *s = opaque;
++
++    /*
++     * Under -icount the vCPUs are given no budget past a pending
++     * QEMU_CLOCK_VIRTUAL deadline, so they are parked exactly at @when while
++     * the main loop runs this callback: the stop lands on the same guest
++     * instruction on every run.
++     */
++    vm_stop(RUN_STATE_PAUSED);
++    sim_clock_send(s, "X %" PRId64 "\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++}
++
++static void sim_clock_command(SimClockState *s, char *line)
++{
++    g_auto(GStrv) f = g_strsplit_set(g_strstrip(line), " \t", -1);
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    guint n = g_strv_length(f);
++    int64_t when;
++
++    if (n == 0 || !f[0][0]) {
++        return;
++    }
++    if (!strcmp(f[0], "N") && n == 2) {
++        sim_clock_send(s, "T %s %" PRId64 "\n", f[1], now);
++    } else if (!strcmp(f[0], "S") && n == 3 &&
++               !qemu_strtoi64(f[2], NULL, 10, &when)) {
++        timer_mod(s->timer, when);
++        sim_clock_send(s, "T %s %" PRId64 "\n", f[1], now);
++    } else if (!strcmp(f[0], "C") && n == 2) {
++        timer_del(s->timer);
++        sim_clock_send(s, "T %s %" PRId64 "\n", f[1], now);
++    } else {
++        sim_clock_send(s, "E bad command\n");
++    }
++}
++
++static int sim_clock_can_receive(void *opaque)
++{
++    SimClockState *s = opaque;
++
++    return SIM_CLOCK_LINE_MAX - s->line_len;
++}
++
++static void sim_clock_receive(void *opaque, const uint8_t *buf, int size)
++{
++    SimClockState *s = opaque;
++    int i;
++
++    for (i = 0; i < size; i++) {
++        if (buf[i] == '\n') {
++            s->line[s->line_len] = '\0';
++            if (s->line_overflow) {
++                sim_clock_send(s, "E line too long\n");
++            } else {
++                sim_clock_command(s, s->line);
++            }
++            s->line_len = 0;
++            s->line_overflow = false;
++        } else if (s->line_len < SIM_CLOCK_LINE_MAX - 1) {
++            s->line[s->line_len++] = buf[i];
++        } else {
++            s->line_overflow = true;
++        }
++    }
++}
++
++static void sim_clock_realize(DeviceState *dev, Error **errp)
++{
++    SimClockState *s = SIM_CLOCK(dev);
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        error_setg(errp, "sim-clock needs a chardev");
++        return;
++    }
++    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sim_clock_expired, s);
++    qemu_chr_fe_set_handlers(&s->chr, sim_clock_can_receive,
++                             sim_clock_receive, NULL, NULL, s, NULL, true);
++}
++
++static void sim_clock_unrealize(DeviceState *dev)
++{
++    SimClockState *s = SIM_CLOCK(dev);
++
++    qemu_chr_fe_deinit(&s->chr, false);
++    timer_free(s->timer);
++}
++
++static const VMStateDescription vmstate_sim_clock = {
++    .name = TYPE_SIM_CLOCK,
++    .unmigratable = 1,
++};
++
++static Property sim_clock_properties[] = {
++    DEFINE_PROP_CHR("chardev", SimClockState, chr),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void sim_clock_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->desc = "Virtual clock read-out and exact-time VM stop over a chardev";
++    dc->realize = sim_clock_realize;
++    dc->unrealize = sim_clock_unrealize;
++    dc->vmsd = &vmstate_sim_clock;
++    device_class_set_props(dc, sim_clock_properties);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static const TypeInfo sim_clock_types[] = {
++    {
++        .name          = TYPE_SIM_CLOCK,
++        .parent        = TYPE_DEVICE,
++        .instance_size = sizeof(SimClockState),
++        .class_init    = sim_clock_class_init,
++    },
++};
++
++DEFINE_TYPES(sim_clock_types)
+-- 
+2.55.0.windows.3
+

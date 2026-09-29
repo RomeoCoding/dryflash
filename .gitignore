@@ -11,3 +11,4 @@ dependencies.lock
 dist/
 /scratch/
 /results/tmp/
+/qemu-src/

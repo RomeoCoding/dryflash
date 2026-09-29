@@ -112,7 +112,7 @@ async def _run_step(session, step: Step, cursor: int, rec: dict, check_fail_on, 
         await session.resume()
         return cursor
     if action in ("sensor_set", "sensor_stream"):
-        if session.sensors is None:
+        if session.sensors is None or not session.sensors.models:
             raise _Fail(f"{action} needs sensors declared in the scenario's 'sensors' list")
         spec = getattr(step, action)
         rec["result"] = await (session.sensors.set(**spec) if action == "sensor_set"

@@ -1,0 +1,98 @@
+From 917092782ed2387b5f9ddd51782dfff52fb23d84 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Tue, 29 Sep 2026 18:12:03 +0300
+Subject: [PATCH] hw/xtensa/esp32: reset the APP CPU synchronously
+
+Releasing the APP CPU from reset (DPORT_APPCPU_RESET, or a timer-group
+watchdog CPU reset) went through qemu_system_reset_request(), which the
+main loop services at a host-dependent moment. The APP CPU can already be
+running at that point, so it executed a varying number of instructions
+before being reset. Under -icount that made dual-core boots differ from
+run to run: two runs of the same image produced APP CPU cycle counts 277
+cycles apart and a boot log that differed in one timestamp.
+
+Queue the reset on the APP CPU itself with async_run_on_cpu(). The work
+runs before that vCPU executes any further instruction and does not
+involve the main loop, so the outcome no longer depends on host timing.
+PRO CPU resets keep going through the system reset path.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/xtensa/esp32.c | 48 +++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 36 insertions(+), 12 deletions(-)
+
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index 46cb821..49d375e 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -106,17 +106,41 @@ static void esp32_dig_reset(void *opaque, int n, int level)
+     }
+ }
+ 
++static void esp32_appcpu_do_reset(CPUState *cs, run_on_cpu_data data)
++{
++    Esp32SocState *s = data.host_ptr;
++
++    xtensa_select_static_vectors(&s->cpu[1].env,
++                                 s->rtc_cntl.stat_vector_sel[1]);
++    remove_cpu_watchpoints(&s->cpu[1]);
++    cpu_reset(cs);
++}
++
++/*
++ * Reset the APP CPU on its own vCPU rather than through
++ * qemu_system_reset_request(). The latter is serviced by the main loop at a
++ * host-dependent moment while the APP CPU may already be running, so the
++ * APP CPU executed a varying number of instructions before its reset and
++ * dual-core boots were not reproducible under -icount.
++ */
++static void esp32_appcpu_reset(Esp32SocState *s, uint32_t cause)
++{
++    s->rtc_cntl.reset_cause[1] = cause;
++    async_run_on_cpu(CPU(&s->cpu[1]), esp32_appcpu_do_reset,
++                     RUN_ON_CPU_HOST_PTR(s));
++}
++
+ static void esp32_cpu_reset(void* opaque, int n, int level)
+ {
+     Esp32SocState *s = ESP32_SOC(opaque);
+     if (level) {
+-        s->requested_reset = (n == 0) ? ESP32_SOC_RESET_PROCPU : ESP32_SOC_RESET_APPCPU;
+-        /* Use different cause for APP CPU so that its reset doesn't cause QEMU to exit,
+-         * when -no-reboot option is given.
+-         */
+-        ShutdownCause cause = (n == 0) ? SHUTDOWN_CAUSE_GUEST_RESET : SHUTDOWN_CAUSE_SUBSYSTEM_RESET;
++        if (n == 1) {
++            esp32_appcpu_reset(s, ESP32_SW_CPU_RESET);
++            return;
++        }
++        s->requested_reset = ESP32_SOC_RESET_PROCPU;
+         s->rtc_cntl.reset_cause[n] = ESP32_SW_CPU_RESET;
+-        qemu_system_reset_request(cause);
++        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+     }
+ }
+ 
+@@ -124,13 +148,13 @@ static void esp32_timg_cpu_reset(void* opaque, int n, int level)
+ {
+     Esp32SocState *s = ESP32_SOC(opaque);
+     if (level) {
+-        s->requested_reset = (n == 0) ? ESP32_SOC_RESET_PROCPU : ESP32_SOC_RESET_APPCPU;
+-        /* Use different cause for APP CPU so that its reset doesn't cause QEMU to exit,
+-         * when -no-reboot option is given.
+-         */
+-        ShutdownCause cause = (n == 0) ? SHUTDOWN_CAUSE_GUEST_RESET : SHUTDOWN_CAUSE_SUBSYSTEM_RESET;
++        if (n == 1) {
++            esp32_appcpu_reset(s, ESP32_TGWDT_CPU_RESET);
++            return;
++        }
++        s->requested_reset = ESP32_SOC_RESET_PROCPU;
+         s->rtc_cntl.reset_cause[n] = ESP32_TGWDT_CPU_RESET;
+-        qemu_system_reset_request(cause);
++        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+     }
+ }
+ 
+-- 
+2.55.0.windows.3
+

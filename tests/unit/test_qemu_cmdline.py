@@ -41,6 +41,9 @@ def test_deterministic_uses_icount_without_sleep():
     assert ("-icount", "shift=3,sleep=off") in _pairs(cmd)
     cmd = build_qemu_cmdline(_opts(deterministic=True, icount_shift=2))
     assert ("-icount", "shift=2,sleep=off") in _pairs(cmd)
+    # The RNG peripheral draws from qemu_guest_getrandom: seed it or random values differ per run.
+    assert ("-seed", "1") in _pairs(cmd)
+    assert "-seed" not in build_qemu_cmdline(_opts())
 
 
 def test_non_deterministic_esp32_has_no_icount_but_riscv_keeps_idf_default():

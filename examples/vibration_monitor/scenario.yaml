@@ -1,0 +1,37 @@
+# Injects a synthetic vibration into the emulated ADXL345 and checks the RMS the firmware prints.
+#   x: 25 Hz sine, 0.5 g peak           -> AC RMS 0.5/sqrt(2)             = 0.3536 g
+#   y: 1800 rpm imbalance line (30 Hz) 0.2 g + 2x harmonic 0.05 g
+#                                        -> sqrt(0.2^2/2 + 0.05^2/2)     = 0.1458 g
+#   z: gravity 1 g + white noise, std 0.02 g (AC RMS ~0.020 g)
+# At 3.0 s of virtual time the x vibration stops. Sampling starts ~0.34 s after reset, so block 5
+# (2.90-3.54 s) straddles the change and block 6 is the first block without it.
+# Tolerances cover 3.9 mg quantisation and a block length that is not a whole number of y periods.
+name: vibration monitor tracks injected vibration
+target: esp32
+emulator:
+  deterministic: true
+sensors:
+  - model: adxl345
+    name: accel
+    address: 0x53
+    rate_hz: 400
+    waveform:
+      x: {type: sine, freq_hz: 25, amplitude: 0.5}
+      y: {type: rotation, rpm: 1800, amplitude: 0.2, harmonics: [[2, 0.05]]}
+      z: [1.0, {type: noise, std: 0.02, seed: 1}]
+steps:
+  - expect: 'ADXL345 DEVID=0xe5'
+    timeout_s: 60
+  - expect: 'block 2 rms_x=([0-9.]+)'
+    timeout_s: 30
+    value_range: [0.3465, 0.3607]
+  - expect: 'rms_y=([0-9.]+)'
+    value_range: [0.1400, 0.1516]
+  - expect: 'rms_z=([0-9.]+)'
+    value_range: [0.0170, 0.0230]
+  - expect: 'mean_z=([0-9.]+)'
+    value_range: [0.99, 1.01]
+  - sensor_set: {sensor: accel, values: {x: 0.0}, at_ms: 3000}
+  - expect: 'block 6 rms_x=([0-9.]+)'
+    timeout_s: 30
+    value_range: [0.0, 0.002]

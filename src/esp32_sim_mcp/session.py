@@ -16,7 +16,8 @@ from typing import Any
 from .gdbmi import Debugger
 from .procutil import PortAllocator, die_with_parent
 from .qemu_cmd import DEFAULT_ICOUNT_SHIFT, QemuOptions, build_qemu_cmdline
-from .qmp import QmpClient, QmpError
+from .qmp import QmpClient
+from .sensors.hub import attach_sensors
 from .targets import get_target
 from .uart import UartBuffer
 
@@ -83,8 +84,9 @@ class Session:
         self.proc: asyncio.subprocess.Process | None = None
         self.qmp: QmpClient | None = None
         self.gdb: Debugger | None = None
-        self.sensors: Any = None  # sensors.SensorHub, attached by the sensor layer (M3)
-        self.vclock: Any = None  # exact virtual-time control; only with the patched QEMU
+        # SensorHub: sensor injection and exact virtual-time stops; only with the patched QEMU.
+        self.sensors: Any = None
+        self.vclock: Any = None
         self.state = "starting"
         self.exit_code: int | None = None
         self.exit_reason: str | None = None
@@ -234,6 +236,8 @@ class Session:
     # ----- run control -----------------------------------------------------------------------
     async def resume(self) -> None:
         self._require_alive()
+        if self.sensors is not None:
+            await self.sensors.before_resume()
         if self.gdb is not None:
             if self.gdb.state == "stopped":
                 await self.gdb.command("-exec-continue")
@@ -244,6 +248,8 @@ class Session:
 
     async def pause(self) -> None:
         self._require_alive()
+        if self.sensors is not None:
+            self.sensors.on_user_pause()
         if self.gdb is not None:
             await self.gdb.interrupt()
         else:
@@ -306,13 +312,17 @@ class Session:
         await self._uart_writer.drain()
 
     async def uart_expect(self, pattern: str, timeout: float, cursor: int | None = None,
-                          context_bytes: int = 400) -> dict:
+                          context_bytes: int = 400, complete_lines: bool = True) -> dict:
+        """complete_lines: only match text up to the last newline received, so a pattern such as
+        'value=(\\d+)' cannot match a line that is still arriving ("value=1" of "value=12")."""
         rx = re.compile(pattern.encode())
         start = self.uart.start if cursor is None else cursor
         deadline = asyncio.get_running_loop().time() + timeout
         async with self._uart_cond:
             while True:
-                m = self.uart.search(rx, start)
+                m = self.uart.search(rx, start, self.uart.last_line_end() if complete_lines else None)
+                if m is None and complete_lines and self._exited.is_set():
+                    m = self.uart.search(rx, start)  # the final unterminated line counts once QEMU is gone
                 if m is not None:
                     return {
                         "matched": True,
@@ -370,6 +380,7 @@ class Session:
             "exit_code": self.exit_code,
             "exit_reason": self.exit_reason,
             "sensors": self.sensors.describe() if self.sensors is not None else [],
+            "virtual_time_control": self.sensors is not None,
             "exact_run_for": self.vclock is not None,
             "elf": str(self.config.elf) if self.config.elf else None,
         }
@@ -391,10 +402,8 @@ class SessionManager:
         s = Session(f"s{next(self._ids)}", config, port)
         self._sessions[s.id] = s
         try:
-            extra: list[str] = []
-            if config.sensors:
-                from .sensors.hub import attach_sensors  # imported lazily: M3 layer
-                extra = await attach_sensors(s, config.sensors)
+            # Adds the sim-clock (and any declared sensors) when this QEMU has the patched devices.
+            extra = await attach_sensors(s, config.sensors)
             await s.start(extra)
             if s.sensors is not None:
                 await s.sensors.connect()

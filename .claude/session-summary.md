@@ -1,26 +1,47 @@
 # Session Summary
-Last updated: 2026-09-29 11:30 (+03:00)
+Last updated: 2026-09-29 (late, +03:00). Stopped mid-M3: usage limit reached.
 
 ## What was just done
-Started M1 of docs/provenance/esp32-sim-mcp-opus-5-prompt.md (the spec). git init done (repo-local identity
-Romeo Mattar <romeomat.work@gmail.com>), prompt moved to docs/provenance/. Docker Desktop could not start:
-WSL is not installed. Owner chose to install WSL2 (`wsl --install --no-distribution`, reboot) themselves.
+M3 in progress (not committed yet). The sensor stack works end to end: the vibration_monitor RMS
+scenario passes, two deterministic runs are byte-identical, and emu_run_for stops exactly
+(300,000,000 / 550,000,000 ns). 5 of 6 sensor integration tests pass on the dev QEMU build.
 
-## Current state of the project
-M1 in progress, blocked on Docker. Findings so far (pinned QEMU tag esp-develop-9.2.2-20260417):
-- hw/xtensa/esp32.c esp32_machine_init_i2c hardwires tmp105 @0x48 on i2c0 and says CLI -device can't
-  reach I2C bus: controllers are realized on "esp32-periph-bus" (child of SoC, SoC has no parent bus).
-- esp32_i2c.c executes the whole cmd list synchronously on TRANS_START; supports RSTART/WRITE/READ/STOP/END.
-- espressif/idf:v6.1 digest sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
-- Name checks (PyPI 404 + GH 0 repos): boardless-mcp, qesp-mcp, espbench-mcp, xtensim, benchless(-mcp, GH rate-limited)
+## State of M3
+- Python (done, unit-tested; 117 unit tests green): src/esp32_sim_mcp/sensors/{waveform,models,link,hub}.py,
+  sensor_set/sensor_stream tools, uart_expect complete_lines (default true), -seed 1 in deterministic mode.
+- QEMU staged sources, as whole files, in qemu-src/ (gitignored working area):
+  hw/sensor/i2c_sim_sensor.c, hw/misc/sim_clock.c, hw/xtensa/esp32.c (0001+0005),
+  system/runstate.c + include/sysemu/runstate.h + accel/tcg/icount-common.c (new patch 0006:
+  no icount warp while a vmstop is pending), msgs/000N.txt (commit messages), apply-dev.sh.
+- qemu-patches/: 0001-0005 generated, BUT 0003 (sim_clock) is STALE (it lacks the cpu_pause +
+  vmstop_request fix) and 0006 is NOT generated yet. Rebuild the series from qemu-src/: new script
+  = fresh git workspace with pristine files (from the release tarball), git am 0001, then commit the
+  staged files with msgs/0002..0006 (0002 sensor+Kconfig/meson glue, 0003 sim_clock+glue,
+  0004 xtensa imply, 0005 esp32.c, 0006 core files), then format-patch. The old scratchpad script
+  mkpatches.sh is obsolete. Write msgs/0006.txt. Run checkpatch.pl (0 errors).
+- Dev loop: docker volume qemu-dev (/dev-src/qemu, configured build); apply-dev.sh copies the staged
+  files and runs ninja; scripts/dev-test-qemu.sh runs pytest with the dev binary swapped into
+  esp32-sim-mcp:test-sensors. The images must be rebuilt after the patches are regenerated.
 
-## Active decisions
-- /goal set by owner: work until the spec is complete (treated as advance go past M1 checkpoint? -> still write M1 report + commit first)
-- Proposed fix for Q2: realize I2C controllers on sysbus-default + unique bus names (patch 0001).
-- ADS1115 must avoid 0x48 (hardwired tmp105) -> use 0x49.
+## Remaining failure
+tests/integration/test_sensors.py::test_reset_reconnects_sensors. Debug with scratch/reset.py
+(non-deterministic session + adxl345). A synchronous vm_stop deadlock was fixed just before the
+stop; recheck whether it still fails, then investigate hub.before_restart/connect over emu_reset.
+
+## Findings to record (not yet in DECISIONS.md / UPSTREAM_ISSUES.md)
+- The esp32 APP CPU reset went through qemu_system_reset_request (async), so dual-core boots
+  were non-deterministic under icount; fixed by patch 0005 (async_run_on_cpu). This is likely also
+  the cause of M1's shift=5 result.
+- The icount warp advanced the clock while a stop was pending (8.87 ms overshoot); fixed by 0006.
+- vm_stop cannot be called from a QEMU_CLOCK_VIRTUAL timer callback (deadlock); use vmstop_request.
+- The ESP32 RNG reads host entropy; deterministic mode passes -seed 1.
+- The UART regex partial-match trap led to complete_lines=true by default.
+- Design: SensorHub prefills samples to a horizon, sim-clock stops exactly there, refill+sync, cont.
+  Banked chips get writes for every bank, so there's no reaction to guest writes (which would be
+  host-timing dependent). ADS1115 defaults to 0x49 (tmp105 at 0x48).
 
 ## Next steps
-Once Docker is up: pull espressif/idf:v6.1, check for QEMU, build hello_world esp32/esp32c3, test tmp105 read, icount determinism.
-
-## Open questions
-None beyond Docker.
+1. Fix the reset test; regenerate patches 0002-0006; rebuild the sensors image; run all suites.
+2. Update DECISIONS.md / UPSTREAM_ISSUES.md; commit M3.
+3. M4: bench/ (10 apps + hidden scenarios + reference.patch, 3 needing sensors), harness with
+   `claude -p` (smoke 2x2 only), CI workflow, README (full), demo/ transcript.
