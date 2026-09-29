@@ -1,0 +1,4 @@
+assert failed: ring_push ring.c:42 (r->count <= RING_CAP)
+
+
+Backtrace: 0x40081a8e:0x3ffb45b0 0x40086329:0x3ffb45d0 0x4008c2a5:0x3ffb45f0 0x400d5b17:0x3ffb4710 0x400e7c2c:0x3ffb4730

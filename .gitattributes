@@ -5,3 +5,4 @@
 *.png binary
 # UART captures are evidence (hashed byte-for-byte); keep their CRLFs untouched.
 *.log -text
+tests/unit/fixtures/real_*.txt -text

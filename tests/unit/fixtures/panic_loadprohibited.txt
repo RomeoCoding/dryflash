@@ -1,0 +1,20 @@
+I (312) main_task: Calling app_main()
+Guru Meditation Error: Core  0 panic'ed (LoadProhibited). Exception was unhandled.
+
+Core  0 register dump:
+PC      : 0x400d5a1b  PS      : 0x00060830  A0      : 0x800d5a33  A1      : 0x3ffb45f0  
+A2      : 0x00000000  A3      : 0x3ffb4620  A4      : 0x00000001  A5      : 0x3ffb4640  
+A6      : 0x00000000  A7      : 0x00000000  A8      : 0x800d5a18  A9      : 0x3ffb45d0  
+A10     : 0x00000000  A11     : 0x3ffb4620  A12     : 0x00000000  A13     : 0x00000000  
+A14     : 0x00000000  A15     : 0x00000000  SAR     : 0x00000004  EXCCAUSE: 0x0000001c  
+EXCVADDR: 0x00000004  LBEG    : 0x400014fd  LEND    : 0x4000150d  LCOUNT  : 0xfffffffd  
+
+
+Backtrace: 0x400d5a18:0x3ffb45f0 0x400d5a30:0x3ffb4610 0x400e7c2c:0x3ffb4630 0x40086185:0x3ffb4660
+
+
+
+
+ELF file SHA256: 5b7e2e5c1d0a8f3a
+
+Rebooting...

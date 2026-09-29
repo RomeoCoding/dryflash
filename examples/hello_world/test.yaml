@@ -1,0 +1,13 @@
+# Scenario for test_run: the greeting and five ticks, deterministically.
+name: hello world prints five ticks
+target: esp32
+emulator:
+  deterministic: true
+steps:
+  - expect: "Hello from esp32-sim-mcp!"
+    timeout_s: 30
+  - expect: 'tick (\d+)\r?\n'
+    value_range: [1, 1]
+  - expect: 'tick 5\r?\n'
+    timeout_s: 10
+  - expect: "done"

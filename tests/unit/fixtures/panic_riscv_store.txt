@@ -1,0 +1,13 @@
+Guru Meditation Error: Core  0 panic'ed (Store access fault). Exception was unhandled.
+
+Core  0 register dump:
+MEPC    : 0x42005a5c  RA      : 0x42005a4e  SP      : 0x3fc8f5c0  GP      : 0x3fc8b600  
+TP      : 0x3fc8f700  T0      : 0x4005890e  T1      : 0x3fc8f36c  T2      : 0x00000000  
+S0/FP   : 0x00000000  S1      : 0x00000000  A0      : 0x00000000  A1      : 0x3fc8f5d4  
+MSTATUS : 0x00001881  MTVEC   : 0x40380001  MCAUSE  : 0x00000007  MTVAL   : 0x00000000  
+MHARTID : 0x00000000  
+
+Stack memory:
+3fc8f5c0: 0x00000000 0x00000000 0x00000000 0x42005a4e 0x00000000 0x00000000 0x00000000 0x00000000
+
+ELF file SHA256: 9f

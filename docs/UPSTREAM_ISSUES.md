@@ -22,3 +22,7 @@ noted; the workaround is listed instead.
 
 1. **`tmp105` ignores `temperature=` given on `-device`**: `tmp105_reset()` zeroes it after the
    properties are applied. Workaround: `qom-set` after reset, before `cont`.
+4. **QMP `system_reset` on the esp32 machine is followed by a guest TG0 watchdog reset**
+   (`rst:0x7 (TG0WDT_SYS_RESET)` right after `rst:0x1 (POWERON_RESET)`). With `-no-reboot`
+   this second, guest-initiated reset shuts QEMU down. Timer-group watchdog state seems to
+   survive the host reset. Workaround: `emu_reset` restarts the QEMU process.

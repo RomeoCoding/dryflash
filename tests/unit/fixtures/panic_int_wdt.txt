@@ -1,0 +1,8 @@
+Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1). 
+
+Core  1 register dump:
+PC      : 0x400d5a8e  PS      : 0x00060034  A0      : 0x800e7c2f  A1      : 0x3ffb6d00  
+EXCVADDR: 0x00000000  LBEG    : 0x00000000  LEND    : 0x00000000  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x400d5a8b:0x3ffb6d00 0x400e7c2c:0x3ffb6d20

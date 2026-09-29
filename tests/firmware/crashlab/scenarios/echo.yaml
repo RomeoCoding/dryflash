@@ -1,0 +1,9 @@
+name: crashlab echo
+emulator: {deterministic: true}
+steps:
+  - expect: "crashlab ready"
+    timeout_s: 30
+  - write: "echo ping\n"
+  - expect: 'echo: ping\r?\n'
+  - expect_not: "unknown command"
+    within_s: 0.5

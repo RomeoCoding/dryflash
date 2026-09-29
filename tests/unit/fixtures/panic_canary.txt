@@ -1,0 +1,8 @@
+Guru Meditation Error: Core  0 panic'ed (Unhandled debug exception). 
+Debug exception reason: Stack canary watchpoint triggered (worker) 
+Core  0 register dump:
+PC      : 0x40081e2e  PS      : 0x00060036  A0      : 0x80081fe4  A1      : 0x3ffb3a10  
+EXCVADDR: 0x00000000  LBEG    : 0x00000000  LEND    : 0x00000000  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x40081e2b:0x3ffb3a10 0x40081fe1:0x3ffb3a30

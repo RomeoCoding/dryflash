@@ -1,0 +1,8 @@
+# Deliberately failing scenario: triggers a NULL dereference, so test_run must fail and decode it.
+name: crashlab null dereference
+steps:
+  - expect: "crashlab ready"
+    timeout_s: 30
+  - write: "null\n"
+  - expect: "this line never appears"
+    timeout_s: 20

@@ -1,0 +1,12 @@
+
+assert failed: app_main crashlab.c:82 (strlen(line) == 0)
+
+
+Backtrace: 0x40085cad:0x3ffb4650 0x40085c75:0x3ffb4670 0x40085a49:0x3ffb4690 0x400d60a6:0x3ffb47b0 0x400d3e15:0x3ffb4820 0x400dacc1:0x3ffb4850
+
+
+
+
+ELF file SHA256: eb3b933fb
+
+Rebooting...

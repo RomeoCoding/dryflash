@@ -1,0 +1,13 @@
+I (320) main_task: Returned from app_main()
+
+***ERROR*** A stack overflow in task recurse has been detected.
+
+
+Backtrace: 0x40081a8e:0x3ffb7a60 0x40086321:0x3ffb7a80 0x400871f6:0x3ffb7aa0 0x40087e6b:0x3ffb7b20 0x4008643c:0x3ffb7b40 0x400863ee:0x3ffb0000 |<-CORRUPTED
+
+
+
+
+ELF file SHA256: 11aa
+
+Rebooting...

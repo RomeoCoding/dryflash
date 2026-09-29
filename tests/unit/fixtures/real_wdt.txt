@@ -1,0 +1,31 @@
+E (7980) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (7980) task_wdt:  - IDLE0 (CPU 0)
+E (7980) task_wdt: Tasks currently running:
+E (7980) task_wdt: CPU 0: spinner
+E (7980) task_wdt: CPU 1: IDLE1
+E (7980) task_wdt: Print CPU 0 (current core) backtrace
+
+
+Backtrace: 0x400D769E:0x3FFB1280 0x400D7A70:0x3FFB12A0 0x40082D05:0x3FFB12D0 0x400D9E70:0x3FFB5C40 0x400DACC1:0x3FFB5C60
+
+E (12980) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (12980) task_wdt:  - IDLE0 (CPU 0)
+E (12980) task_wdt: Tasks currently running:
+E (12980) task_wdt: CPU 0: spinner
+E (12980) task_wdt: CPU 1: IDLE1
+E (12980) task_wdt: Print CPU 0 (current core) backtrace
+
+
+Backtrace: 0x400D769E:0x3FFB1280 0x400D7A70:0x3FFB12A0 0x40082D05:0x3FFB12D0 0x400D9E70:0x3FFB5C40 0x400DACC1:0x3FFB5C60
+
+E (17980) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (17980) task_wdt:  - IDLE0 (CPU 0)
+E (17980) task_wdt: Tasks currently running:
+E (17980) task_wdt: CPU 0: spinner
+E (17980) task_wdt: CPU 1: IDLE1
+E (17980) task_wdt: Print CPU 0 (current core) backtrace
+
+
+Backtrace: 0x400D769E:0x3FFB1280 0x400D7A70:0x3FFB12A0 0x40082D05:0x3FFB12D0 0x400D9E70:0x3FFB5C40 0x400DACC1:0x3FFB5C60
+
+E (22980) task_wdt: Task watchdog got triggered. The following tasks/
