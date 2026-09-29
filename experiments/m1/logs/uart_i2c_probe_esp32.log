@@ -1,0 +1,64 @@
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15824
+load:0x40080400,len:3988
+entry 0x40080644
+I (803) boot: ESP-IDF v6.1 2nd stage bootloader
+I (804) boot: compile time Sep 29 2026 08:41:11
+I (804) boot: Multicore bootloader
+I (933) boot: chip revision: v0.0
+I (937) boot.esp32: SPI Speed      : 40MHz
+I (937) boot.esp32: SPI Mode       : DIO
+I (937) boot.esp32: SPI Flash Size : 2MB
+I (955) boot: Enabling RNG early entropy source...
+I (972) boot: Partition Table:
+I (972) boot: ## Label            Usage          Type ST Offset   Length
+I (972) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (973) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (973) boot:  2 factory          factory app      00 00 00010000 00100000
+I (986) boot: End of partition table
+I (1097) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=0a32ch ( 41772) map
+I (1157) esp_image: segment 1: paddr=0001a354 vaddr=3ffb0000 size=02b78h ( 11128) load
+I (1215) esp_image: segment 2: paddr=0001ced4 vaddr=40080000 size=03144h ( 12612) load
+I (1276) esp_image: segment 3: paddr=00020020 vaddr=400d0020 size=10c60h ( 68704) map
+I (1338) esp_image: segment 4: paddr=00030c88 vaddr=40083144 size=08268h ( 33384) load
+I (1400) esp_image: segment 5: paddr=00038ef8 vaddr=50000000 size=00028h (    40) load
+I (1601) boot: Loaded app from partition at offset 0x10000
+I (1601) boot: Disabling RNG early entropy source...
+I (1628) cpu_start: Multicore app
+I (2893) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (2896) cpu_start: Pro cpu start user code
+I (2896) cpu_start: cpu freq: 160000000 Hz
+I (2896) app_init: Application information:
+I (2896) app_init: Project name:     i2c_probe
+I (2897) app_init: App version:      1
+I (2897) app_init: Compile time:     Sep 29 2026 08:41:24
+I (2897) app_init: ELF file SHA256:  d354c3d12...
+I (2897) app_init: ESP-IDF:          v6.1
+I (2898) efuse_init: Min chip rev:     v0.0
+I (2898) efuse_init: Max chip rev:     v3.99 
+I (2898) efuse_init: Chip rev:         v0.0
+I (2899) heap_init: Initializing. RAM available for dynamic allocation:
+I (2900) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM
+I (2900) heap_init: At 3FFB35F8 len 0002CA08 (178 KiB): DRAM
+I (2900) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (2901) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (2901) heap_init: At 4008B3AC len 00014C54 (83 KiB): IRAM
+I (2931) spi_flash: detected chip: gd
+I (2942) spi_flash: flash io: dio
+W (2946) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (2956) main_task: Started on CPU0
+I (2956) main_task: Calling app_main()
+probe 0x48: ESP_OK
+probe 0x50 (absent): ESP_ERR_NOT_FOUND
+read temp (reg 0x00): ESP_OK 19 00
+write config 0x60: ESP_OK 01 60
+read config (reg 0x01): ESP_OK 60
+read 40 bytes: ESP_OK 19 00 ff ff
+I2C_PROBE_DONE
+I (2966) main_task: Returned from app_main()

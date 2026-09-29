@@ -1,0 +1,21 @@
+Checking "python3" ...
+Python 3.12.3
+"python3" has been detected
+Activating ESP-IDF 6.1
+Setting IDF_PATH to '/opt/esp/idf'.
+* Checking python version ... 3.12.3
+* Checking python dependencies ... OK
+* Deactivating the current ESP-IDF environment (if any) ... OK
+* Establishing a new ESP-IDF environment ... OK
+* Identifying shell ... bash
+* Detecting outdated tools in system ... OK - no outdated tools found
+* Shell completion ... Autocompletion code generated
+
+Done! You can now compile ESP-IDF projects.
+Go to the project directory and run:
+
+  idf.py build
+target=esp32c3 set-target=7.4s build=17.1s qemu_boot_to_hello=0.17s
+Hello world!
+This is esp32c3 chip with 1 CPU core(s), WiFi/BLE, silicon revision v0.3, 2MB external flash
+126688 build/hello_world.bin

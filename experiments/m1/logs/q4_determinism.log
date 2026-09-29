@@ -1,0 +1,30 @@
+no_icount              run1 wall=  2.93s md5=1f4101bd4f225b879b88800375e92fe3 lines=100
+no_icount              run2 wall=  2.90s md5=ba68f5d7c18c3eeb9d4cd5fe9785607a lines=100
+no_icount              run3 wall=  2.87s md5=50e7360baeb3840f08bc227ba4393908 lines=100
+icount_shift1          run1 wall= 13.78s md5=0517cb922be2672ff6bdd5ad79865afb lines=100
+icount_shift1          run2 wall= 13.68s md5=0517cb922be2672ff6bdd5ad79865afb lines=100
+icount_shift1          run3 wall= 13.98s md5=0517cb922be2672ff6bdd5ad79865afb lines=100
+icount_shift2          run1 wall=  7.73s md5=e6e6d60bea3c967e7789d4e3c23dd74e lines=100
+icount_shift2          run2 wall=  7.78s md5=e6e6d60bea3c967e7789d4e3c23dd74e lines=100
+icount_shift2          run3 wall=  8.24s md5=e6e6d60bea3c967e7789d4e3c23dd74e lines=100
+icount_shift3          run1 wall=  4.65s md5=d0f8683a5079eb18963e5111618a7bda lines=100
+icount_shift3          run2 wall=  4.66s md5=d0f8683a5079eb18963e5111618a7bda lines=100
+icount_shift3          run3 wall=  4.54s md5=d0f8683a5079eb18963e5111618a7bda lines=100
+icount_shift5          run1 wall=  2.24s md5=6b602340f75b43acd2ba715b0b6614d6 lines=100
+icount_shift5          run2 wall=  2.21s md5=b916efee0a22902a0e43449cd8d8d692 lines=100
+icount_shift5          run3 wall=  2.21s md5=6b602340f75b43acd2ba715b0b6614d6 lines=100
+icount_shift3_sleep_on run1 wall=  6.21s md5=d56ec40c7221166b3525b553dbffd01b lines=100
+icount_shift3_sleep_on run2 wall=  6.10s md5=d56ec40c7221166b3525b553dbffd01b lines=100
+--- diff no_icount run1 vs run2 (first lines) ---
+11,29c11,29
+< I (760) boot: ESP-IDF v6.1 2nd stage bootloader
+< I (761) boot: compile time Sep 29 2026 08:42:25
+< I (761) boot: Multicore bootloader
+< I (880) boot: chip revision: v0.0
+< I (883) boot.esp32: SPI Speed      : 40MHz
+< I (884) boot.esp32: SPI Mode       : DIO
+< I (884) boot.esp32: SPI Flash Size : 2MB
+--- icount shift=3 app output tail ---
+A i=19 ticks=27 t_us=241977 acc=92c99480
+B i=19 ticks=56 t_us=270129 acc=92c99480
+TIMER_DET_DONE ticks=1520

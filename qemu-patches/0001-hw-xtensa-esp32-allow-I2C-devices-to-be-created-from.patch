@@ -1,0 +1,85 @@
+From be06dfb163ed9efbd0e4aa83ed7fa498509593fa Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Tue, 29 Sep 2026 16:08:29 +0300
+Subject: [PATCH] hw/xtensa/esp32: allow I2C devices to be created from the
+ command line
+
+The ESP32 I2C controllers were realized on the SoC-private
+esp32-periph-bus, which is not reachable from sysbus-default, so
+'-device <i2c-slave>,bus=...' failed with "Bus not found". Both
+controllers also named their bus "i2c", which would have made the
+bus= option ambiguous.
+
+Realize the controllers on sysbus-default and let QEMU assign unique
+bus names (i2c-bus.0, i2c-bus.1). The hard-wired tmp105 at 0x48 on
+I2C0 is kept.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/i2c/esp32_i2c.c |  7 ++++++-
+ hw/xtensa/esp32.c  | 23 +++++++++++++----------
+ 2 files changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/hw/i2c/esp32_i2c.c b/hw/i2c/esp32_i2c.c
+index 5f4022f..8361493 100644
+--- a/hw/i2c/esp32_i2c.c
++++ b/hw/i2c/esp32_i2c.c
+@@ -255,7 +255,12 @@ static void esp32_i2c_init(Object * obj)
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
+ 
+-    s->bus = i2c_init_bus(DEVICE(s), "i2c");
++    /*
++     * Let QEMU pick a unique name ("i2c-bus.0", "i2c-bus.1", ...): with a
++     * fixed name both controllers' buses would be called "i2c" and
++     * "-device ...,bus=" could not tell them apart.
++     */
++    s->bus = i2c_init_bus(DEVICE(s), NULL);
+ 
+     fifo8_create(&s->tx_fifo, ESP32_I2C_FIFO_LENGTH);
+     fifo8_create(&s->rx_fifo, ESP32_I2C_FIFO_LENGTH);
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index e000470..46cb821 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -470,7 +470,14 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+         const hwaddr i2c_base[] = {
+             DR_REG_I2C_EXT_BASE, DR_REG_I2C1_EXT_BASE
+         };
+-        qdev_realize(DEVICE(&s->i2c[i]), &s->periph_bus, &error_fatal);
++        /*
++         * Unlike the other peripherals, the I2C controllers sit on
++         * sysbus-default so that their buses are reachable from the command
++         * line (-device tmp105,bus=i2c-bus.0,address=0x49). A system reset
++         * now also resets them, which is harmless: esp32_soc_reset() resets
++         * them on every peripheral reset anyway.
++         */
++        sysbus_realize(SYS_BUS_DEVICE(&s->i2c[i]), &error_fatal);
+ 
+         esp32_soc_add_periph_device(sys_mem, &s->i2c[i], i2c_base[i]);
+ 
+@@ -741,16 +748,12 @@ static void esp32_machine_init_psram(Esp32SocState *ss, uint32_t size_mbytes)
+ 
+ static void esp32_machine_init_i2c(Esp32SocState *s)
+ {
+-    /* It should be possible to create an I2C device from the command line,
+-     * however for this to work the I2C bus must be reachable from sysbus-default.
+-     * At the moment the peripherals are added to an unrelated bus, to avoid being
+-     * reset on CPU reset.
+-     * If we find a way to decouple peripheral reset from sysbus reset,
+-     * we can move them to the sysbus and thus enable creation of i2c devices.
++    /*
++     * Additional I2C devices can be created from the command line, e.g.
++     * -device tmp105,bus=i2c-bus.0,address=0x49. This one is kept for
++     * compatibility with existing users of the default machine.
+      */
+-    DeviceState *i2c_master = DEVICE(&s->i2c[0]);
+-    I2CBus* i2c_bus = I2C_BUS(qdev_get_child_bus(i2c_master, "i2c"));
+-    I2CSlave* tmp105 = i2c_slave_create_simple(i2c_bus, "tmp105", 0x48);
++    I2CSlave *tmp105 = i2c_slave_create_simple(s->i2c[0].bus, "tmp105", 0x48);
+     object_property_set_int(OBJECT(tmp105), "temperature", 25 * 1000, &error_fatal);
+ }
+ 
+-- 
+2.55.0.windows.3
+

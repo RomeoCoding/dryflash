@@ -1,0 +1,13 @@
+wall_to_marker=1.45s
+--- qemu stderr ---
+qemu-system-xtensa: terminating on signal 15 from pid 8519 (timeout)
+--- uart (app section) ---
+I (2956) main_task: Calling app_main()
+probe 0x48: ESP_OK
+probe 0x50 (absent): ESP_ERR_NOT_FOUND
+read temp (reg 0x00): ESP_OK 19 00
+write config 0x60: ESP_OK 01 60
+read config (reg 0x01): ESP_OK 60
+read 40 bytes: ESP_OK 19 00 ff ff
+I2C_PROBE_DONE
+I (2966) main_task: Returned from app_main()

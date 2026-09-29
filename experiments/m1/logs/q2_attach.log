@@ -1,0 +1,38 @@
+Checking "python3" ...
+Python 3.12.3
+Setting IDF_PATH to '/opt/esp/idf'.
+
+Done! You can now compile ESP-IDF projects.
+Go to the project directory and run:
+
+  idf.py build
+== info qtree (i2c-related, stock machine) ==
+4:bus: main-system-bus
+== -device tmp105,address=0x49 ==
+Not initializing SPI Flash
+qemu-system-xtensa: -device tmp105,address=0x49: No 'i2c-bus' bus found for device 'tmp105'
+== -device tmp105,bus=i2c,address=0x49 ==
+Not initializing SPI Flash
+qemu-system-xtensa: -device tmp105,bus=i2c,address=0x49: Bus 'i2c' not found
+== -device tmp105,bus=i2c.0,address=0x49 ==
+Not initializing SPI Flash
+qemu-system-xtensa: -device tmp105,bus=i2c.0,address=0x49: Bus 'i2c.0' not found
+== -device tmp105,bus=/machine/soc/i2c0/i2c,address=0x49 ==
+Not initializing SPI Flash
+qemu-system-xtensa: -device tmp105,bus=/machine/soc/i2c0/i2c,address=0x49: Device 'machine' not found
+devices at "main-system-bus": "open_eth", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device", "unimplemented-device"
+== -device tmp105,bus=esp32-periph-bus,address=0x49 ==
+Not initializing SPI Flash
+qemu-system-xtensa: -device tmp105,bus=esp32-periph-bus,address=0x49: Bus 'esp32-periph-bus' not found
+== device_add at runtime via HMP ==
+Not initializing SPI Flash
+(qemu) device_add tmp105,bus=i2c,address=0x49
+Error: Bus 'i2c' not found
+== QOM paths ==
+    /i2c0 (esp32.i2c)
+      /esp32.i2c[0] (memory-region)
+      /i2c (i2c-bus)
+    /i2c1 (esp32.i2c)
+      /esp32.i2c[0] (memory-region)
+      /i2c (i2c-bus)
+    /device[24] (tmp105)

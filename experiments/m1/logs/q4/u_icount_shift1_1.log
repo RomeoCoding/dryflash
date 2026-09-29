@@ -1,0 +1,100 @@
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15824
+load:0x40080400,len:3988
+entry 0x40080644
+I (601) boot: ESP-IDF v6.1 2nd stage bootloader
+I (601) boot: compile time Sep 29 2026 08:42:25
+I (601) boot: Multicore bootloader
+I (601) boot: chip revision: v0.0
+I (601) boot.esp32: SPI Speed      : 40MHz
+I (601) boot.esp32: SPI Mode       : DIO
+I (601) boot.esp32: SPI Flash Size : 2MB
+I (601) boot: Enabling RNG early entropy source...
+I (601) boot: Partition Table:
+I (601) boot: ## Label            Usage          Type ST Offset   Length
+I (601) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (601) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (601) boot:  2 factory          factory app      00 00 00010000 00100000
+I (601) boot: End of partition table
+I (601) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=08cd4h ( 36052) map
+I (602) esp_image: segment 1: paddr=00018cfc vaddr=3ffb0000 size=02b1ch ( 11036) load
+I (602) esp_image: segment 2: paddr=0001b820 vaddr=40080000 size=047f8h ( 18424) load
+I (603) esp_image: segment 3: paddr=00020020 vaddr=400d0020 size=0cf90h ( 53136) map
+I (604) esp_image: segment 4: paddr=0002cfb8 vaddr=400847f8 size=06818h ( 26648) load
+I (604) esp_image: segment 5: paddr=000337d8 vaddr=50000000 size=00028h (    40) load
+I (605) boot: Loaded app from partition at offset 0x10000
+I (605) boot: Disabling RNG early entropy source...
+I (605) cpu_start: Multicore app
+I (1182) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (1182) cpu_start: Pro cpu start user code
+I (1182) cpu_start: cpu freq: 160000000 Hz
+I (1182) app_init: Application information:
+I (1182) app_init: Project name:     timer_det
+I (1182) app_init: App version:      1
+I (1182) app_init: Compile time:     Sep 29 2026 08:42:38
+I (1182) app_init: ELF file SHA256:  95fabd5d1...
+I (1182) app_init: ESP-IDF:          v6.1
+I (1182) efuse_init: Min chip rev:     v0.0
+I (1182) efuse_init: Max chip rev:     v3.99 
+I (1182) efuse_init: Chip rev:         v0.0
+I (1182) heap_init: Initializing. RAM available for dynamic allocation:
+I (1182) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM
+I (1182) heap_init: At 3FFB3558 len 0002CAA8 (178 KiB): DRAM
+I (1182) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (1182) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (1182) heap_init: At 4008B010 len 00014FF0 (83 KiB): IRAM
+I (1187) spi_flash: detected chip: gd
+I (1281) spi_flash: flash io: dio
+W (1287) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.
+I (1295) main_task: Started on CPU0
+I (1295) main_task: Calling app_main()
+A i=0 ticks=0 t_us=114712 acc=aa6902a0
+A i=1 ticks=0 t_us=115052 acc=00d55540
+A i=2 ticks=1 t_us=115398 acc=65ecf7e0
+A i=3 ticks=1 t_us=115737 acc=1057ea80
+A i=4 ticks=1 t_us=116076 acc=0abe2d20
+A i=5 ticks=2 t_us=116421 acc=33c7bfc0
+A i=6 ticks=2 t_us=116760 acc=3e1ca260
+A i=7 ticks=2 t_us=117100 acc=b064d500
+A i=8 ticks=3 t_us=117445 acc=e54857a0
+A i=9 ticks=3 t_us=117784 acc=0b6f2a40
+A i=10 ticks=3 t_us=118123 acc=25814ce0
+A i=11 ticks=4 t_us=118469 acc=0a26bf80
+A i=12 ticks=4 t_us=118809 acc=64078220
+A i=13 ticks=4 t_us=119148 acc=b1cb94c0
+A i=14 ticks=5 t_us=119494 acc=461af760
+A i=15 ticks=5 t_us=119834 acc=479daa00
+A i=16 ticks=5 t_us=120173 acc=b0fbaca0
+A i=17 ticks=6 t_us=120519 acc=50dcff40
+A i=18 ticks=6 t_us=120859 acc=c9e9a1e0
+A i=19 ticks=6 t_us=121198 acc=92c99480
+A done
+B i=0 ticks=7 t_us=121564 acc=aa6902a0
+B i=1 ticks=7 t_us=121908 acc=00d55540
+B i=2 ticks=7 t_us=122247 acc=65ecf7e0
+B i=3 ticks=8 t_us=122589 acc=1057ea80
+B i=4 ticks=8 t_us=122933 acc=0abe2d20
+B i=5 ticks=8 t_us=123272 acc=33c7bfc0
+B i=6 ticks=9 t_us=123618 acc=3e1ca260
+B i=7 ticks=9 t_us=123958 acc=b064d500
+B i=8 ticks=9 t_us=124298 acc=e54857a0
+B i=9 ticks=10 t_us=124644 acc=0b6f2a40
+B i=10 ticks=10 t_us=124984 acc=25814ce0
+B i=11 ticks=10 t_us=125326 acc=0a26bf80
+B i=12 ticks=11 t_us=125670 acc=64078220
+B i=13 ticks=11 t_us=126014 acc=b1cb94c0
+B i=14 ticks=11 t_us=126354 acc=461af760
+B i=15 ticks=12 t_us=126697 acc=479daa00
+B i=16 ticks=12 t_us=127042 acc=b0fbaca0
+B i=17 ticks=13 t_us=127385 acc=50dcff40
+B i=18 ticks=13 t_us=127726 acc=c9e9a1e0
+B i=19 ticks=13 t_us=128070 acc=92c99480
+B done
+TIMER_DET_DONE ticks=1499
+I (2805) main_task: Returned from app_main()

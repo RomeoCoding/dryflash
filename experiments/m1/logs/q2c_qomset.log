@@ -1,0 +1,9 @@
+{'micro': 2, 'minor': 2, 'major': 9}
+qmp_capabilities {'return': {}}
+qom-set t49 {'return': {}}
+qom-set t4a {'return': {}}
+cont {'return': {}}
+port 0 addr 0x48: ESP_OK raw=1900 temp=25.00 C
+port 0 addr 0x49: ESP_OK raw=1f80 temp=31.50 C
+port 1 addr 0x4a: ESP_OK raw=f380 temp=-12.50 C
+probe port1 0x48 (must be absent): ESP_ERR_NOT_FOUND

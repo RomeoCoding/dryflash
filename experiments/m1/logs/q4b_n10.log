@@ -1,0 +1,4 @@
+shift2  N=10 distinct_logs=1 counts=[10] wall_per_virtual_s mean=2.85 sd=0.10
+shift3  N=10 distinct_logs=1 counts=[10] wall_per_virtual_s mean=1.59 sd=0.02
+shift5  N=10 distinct_logs=2 counts=[6, 4] wall_per_virtual_s mean=0.70 sd=0.03
+none    N=10 distinct_logs=10 counts=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1] wall_per_virtual_s mean=0.65 sd=0.00

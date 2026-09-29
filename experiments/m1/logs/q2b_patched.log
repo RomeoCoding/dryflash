@@ -1,0 +1,18 @@
+QEMU emulator version 9.2.2 (esp_develop_9.2.2_20260417+esp32-sim-mcp)
+== info qtree (patched) ==
+  dev: esp32.i2c, id ""
+    bus: i2c-bus.1
+  dev: esp32.i2c, id ""
+    bus: i2c-bus.0
+      dev: tmp105, id ""
+        address = 73 (0x49)
+      dev: tmp105, id ""
+        address = 72 (0x48)
+== ambiguous bare -device (no bus=) ==
+== firmware ==
+wall_to_marker=1.56s
+port 0 addr 0x48: ESP_OK raw=1900 temp=25.00 C
+port 0 addr 0x49: ESP_OK raw=0000 temp=0.00 C
+port 1 addr 0x4a: ESP_OK raw=0000 temp=0.00 C
+probe port1 0x48 (must be absent): ESP_ERR_NOT_FOUND
+I2C_ATTACH_DONE
