@@ -1,0 +1,5 @@
+# Patches, shell scripts and Dockerfiles are consumed inside Linux containers; CRLF breaks them.
+* text=auto eol=lf
+*.bin binary
+*.elf binary
+*.png binary
