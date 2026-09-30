@@ -2,25 +2,22 @@
 Last updated: 2026-09-30 (+03:00)
 
 ## What was just done
-M3 committed (7b61fe2). M4 mostly done (uncommitted): 10 bench apps + hidden scenarios + reference
-patches (verify: 10/10 discriminate, bench/results/verify.json), bench/harness.py, bench/README.md
-(SMOKE_RESULTS and COST_ESTIMATE placeholders still to fill), .github/workflows/ci.yml, full README.md,
-demo/run_demo.py (NOT yet run; must run it to produce demo/transcript.md), CLI test-run
-(src/esp32_sim_mcp/cli.py + testrun.py), 120 unit tests green. Runtime images esp32-sim-mcp and
-esp32-sim-mcp-sensors built; the host stdio smoke via --docker passed.
+All four milestones' content is done. Benchmark smoke run finished (4/4 hidden tests passed, N=4,
+~$0.86), bench/README.md filled in; demo/run_demo.py ran and wrote demo/transcript.md. Final test
+pass running (scratch/final_tests.log), then the M4 commit.
 
-## In progress
-Harness smoke run (background): python bench/harness.py --tasks null_config adc_byte_order
---configs mcp baseline --run-id smoke-20260930 -> bench/results/smoke-20260930.{json,md,log}.
+## Current state of the project
+- M1 3049bd2, M2 b0c2d02, M3 7b61fe2, M4 WIP 94ac7c6 (+ final M4 commit pending). Nothing pushed.
+- Images: esp32-sim-mcp, esp32-sim-mcp-sensors (runtime), esp32-sim-mcp:test, :test-sensors.
+- qemu-patches 0001-0006; staged whole files in qemu-src/ (gitignored), regen script in scratchpad.
+
+## Active decisions
+See DECISIONS.md (M1-M4). Deterministic mode: -icount shift=3,sleep=off -seed 1; emu_reset = QEMU
+restart; uart_expect matches complete lines; sensors via SensorHub slicing on sim-clock.
 
 ## Next steps
-1. Fill bench/README.md SMOKE_RESULTS and COST_ESTIMATE from the smoke json (N stated, no
-   significance claims); link from the README Benchmark section.
-2. Run the demo in the test-sensors image (DEMO_FAST=1) -> demo/transcript.md; add demo/README.md.
-3. Final full test pass (unit, integration on both images, sensors), then commit M4.
-4. Final summary to the owner. Note: the host smoke once timed out at uart_expect after
-   emu_continue under heavy CPU load (it passed when rerun idle).
+Owner decides: project name (M1 report recommends boardless-mcp), whether to run the full
+benchmark (bench/README.md cost estimate), pushing/publishing, upstream PRs for patches 0005/0006.
 
-## Notes
-- The scratchpad has regen.sh (rebuilds qemu-patches 0002-0006 from qemu-src/ staged files + msgs/).
-- Agent runs inherit the user CLAUDE.md (documented); the harness has --claude-config-dir to isolate.
+## Open questions
+Agent benchmark runs inherit the user-level CLAUDE.md unless --claude-config-dir is used.

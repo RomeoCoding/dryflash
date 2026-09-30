@@ -61,11 +61,41 @@ Options: `--model` (default `claude-sonnet-5`, or `$BENCH_MODEL`), `--max-turns`
 
 ## Smoke run results
 
-SMOKE_RESULTS
+Run `smoke-20260930` (`results/smoke-20260930.json`, `.md`, `.log`): model `claude-sonnet-5`,
+2 tasks x 2 configurations, **one attempt each, N = 4 runs in total**.
+
+| task | config | hidden test | wall (s) | turns | output tokens | cost (USD) |
+|---|---|---|---|---|---|---|
+| null_config | mcp | pass | 127 | 16 | 2,296 | 0.19 |
+| null_config | baseline | pass | 133 | 19 | 4,573 | 0.23 |
+| adc_byte_order | mcp | pass | 124 | 14 | 2,543 | 0.19 |
+| adc_byte_order | baseline | pass | 151 | 20 | 4,964 | 0.24 |
+
+All four runs fixed their bug, and all four root-cause summaries are correct. Both bugs turned
+out to be findable by reading the code: the missing NULL check and the byte order in
+`read_ain0()` are visible once the symptom is described. This smoke run therefore says nothing
+about whether the server helps; it shows that the harness works end to end and what a run costs.
+The MCP runs used fewer turns and output tokens here (16/14 vs 19/20 turns), which at N = 2 per
+configuration is an anecdote, not a measurement.
+
+The runs inherited the operator's user-level CLAUDE.md (see `--claude-config-dir`). Both
+configurations saw the same context, but it is not a clean-room setup. The first run was
+interrupted by the host running low on memory and resumed with `--resume`; the completed run was
+not repeated.
 
 ## Cost estimate for the full run
 
-COST_ESTIMATE
+From the smoke run: $0.19–0.24 per run (mean $0.21) and about 2–2.5 minutes of wall time,
+plus a cold ESP-IDF build on the first run of each container.
+
+- **One attempt per task and configuration (20 runs): about $4–5 and 50–60 minutes** at
+  smoke-run rates. The remaining tasks include harder ones (the race, the watchdog, the scaling
+  bugs), which will take more turns; budget **up to ~$10** for safety.
+- **Five attempts each (100 runs), the minimum for a per-task success rate worth reporting:
+  about $20–50 and 4–6 hours.**
+- A more capable model (`--model`) costs proportionally more per token.
+
+The owner decides whether to spend this; nothing beyond the smoke run has been executed.
 
 ## How to read the numbers
 
@@ -73,6 +103,8 @@ N is tiny: 10 tasks, one attempt each, one model. Differences between the config
 N are anecdotes, not evidence; nothing here is claimed to be statistically significant. To make a
 claim, repeat the run several times (tasks × configurations × attempts) and report per-task
 success rates with confidence intervals. The tasks are also written by the author of the tool
-being measured, which biases them towards what the tool can observe; the four sensor tasks in
-particular are hard to solve by reading code alone *by construction*, and the six others are the
-fairer comparison.
+being measured, which biases them towards what the tool can observe. The four sensor tasks were
+meant to need observation, but the smoke run shows that at least `adc_byte_order` falls to careful
+code reading once the symptom is described. "Needs sensor injection to observe" means the bug
+shows only with sensor data present, not that it cannot be found without it. Harder, less
+self-describing tasks would be needed to separate the two configurations.

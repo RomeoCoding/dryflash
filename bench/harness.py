@@ -164,6 +164,7 @@ def main() -> int:
                     help="CLAUDE_CONFIG_DIR for the agent runs; point it at a directory holding only your "
                          "credentials to keep your user-level CLAUDE.md out of the benchmark")
     ap.add_argument("--run-id", default=time.strftime("%Y%m%d-%H%M%S"))
+    ap.add_argument("--resume", action="store_true", help="keep results already in <run_id>.json, run the rest")
     args = ap.parse_args()
     if shutil.which("claude") is None:
         print("claude CLI not found on PATH", file=sys.stderr)
@@ -171,8 +172,14 @@ def main() -> int:
     root = Path(args.workdir)
     root.mkdir(parents=True, exist_ok=True)
     results = []
+    prev = HERE / "results" / f"{args.run_id}.json"
+    if args.resume and prev.exists():
+        results = json.loads(prev.read_text())["results"]
+    done = {(r["task"], r["config"]) for r in results}
     for task in args.tasks:
         for cfg in args.configs:
+            if (task, cfg) in done:
+                continue
             print(f"== {task} / {cfg}", flush=True)
             r = run_one(task, cfg, args, root)
             print(f"   hidden test {'PASS' if r['success'] else 'FAIL'}, {r['wall_s']} s, turns={r['num_turns']}, "

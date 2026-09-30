@@ -1,3 +1,10 @@
 == null_config / mcp
    hidden test PASS, 127.4 s, turns=16, cost=$0.19272840000000002
 == null_config / baseline
+== null_config / baseline
+   hidden test PASS, 133.2 s, turns=19, cost=$0.2297446
+== adc_byte_order / mcp
+   hidden test PASS, 123.7 s, turns=14, cost=$0.1937494
+== adc_byte_order / baseline
+   hidden test PASS, 150.5 s, turns=20, cost=$0.24217940000000002
+report: C:\Users\Romeo Mattar\Projects\esp32-sim-mcp\bench\results\smoke-20260930.md

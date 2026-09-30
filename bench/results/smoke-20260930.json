@@ -18,6 +18,57 @@
       "cache_read_tokens": 576822,
       "cache_creation_tokens": 13585,
       "summary": "**Root cause:** In `handle()` (main/main.c), only `key` was checked for `NULL` after parsing a `set` command with `strtok`. When the operator omitted the value (e.g. `set name`), `value` was `NULL`, and `apply_setting()` passed it straight to `strncpy(cfg->name, value, ...)` / `atoi(value)`, dereferencing a null pointer and crashing/rebooting the device.\n\n**Fix:** Extended the existing guard to also check `value == NULL`, printing `error: usage: set <key> <value>` and returning before `apply_setting()` is ever called \u2014 one line changed in `main/main.c:40`.\n\nVerified in QEMU: `set name` now pri"
+    },
+    {
+      "task": "null_config",
+      "config": "baseline",
+      "model": "claude-sonnet-5",
+      "success": true,
+      "hidden_test_reason": null,
+      "wall_s": 133.2,
+      "agent_exit": 0,
+      "agent_error": false,
+      "num_turns": 19,
+      "cost_usd": 0.2297446,
+      "input_tokens": 38,
+      "output_tokens": 4573,
+      "cache_read_tokens": 661333,
+      "cache_creation_tokens": 12918,
+      "summary": "**Root cause:** In `handle()` (main/main.c), the `set` command only checked that `key` was non-NULL after `strtok`. When a value was omitted (e.g. `set name`), `value` was `NULL`, and it was passed straight into `apply_setting()`, where `strncpy(cfg->name, value, ...)` or `atoi(value)` dereferenced the NULL pointer, crashing/rebooting the device.\n\n**Fix:** Added `value == NULL` to the existing missing-argument check in `main/main.c:40`, so a `set` with no value now prints `error: usage: set <key> <value>` and returns without touching the config, instead of crashing. Verified the firmware still"
+    },
+    {
+      "task": "adc_byte_order",
+      "config": "mcp",
+      "model": "claude-sonnet-5",
+      "success": true,
+      "hidden_test_reason": null,
+      "wall_s": 123.7,
+      "agent_exit": 0,
+      "agent_error": false,
+      "num_turns": 14,
+      "cost_usd": 0.1937494,
+      "input_tokens": 28,
+      "output_tokens": 2543,
+      "cache_read_tokens": 506917,
+      "cache_creation_tokens": 16720,
+      "summary": "**Root cause:** the ADS1115 returns its 16-bit conversion result big-endian (MSB in the first byte, LSB in the second), but `read_ain0()` in `main/main.c` reassembled the bytes as little-endian: `(int16_t)(b[1] << 8 | b[0])`. This swapped the high and low bytes, producing garbage (and sometimes negative) codes.\n\n**Fix:** swap the byte order to `(int16_t)(b[0] << 8 | b[1])` (main/main.c:29).\n\nVerified in QEMU with an injected ADS1115 sensor set to 1.234 V on AIN0 \u2014 the firmware now prints `ain0=1.234 V`, matching the applied voltage exactly."
+    },
+    {
+      "task": "adc_byte_order",
+      "config": "baseline",
+      "model": "claude-sonnet-5",
+      "success": true,
+      "hidden_test_reason": null,
+      "wall_s": 150.5,
+      "agent_exit": 0,
+      "agent_error": false,
+      "num_turns": 20,
+      "cost_usd": 0.24217940000000002,
+      "input_tokens": 40,
+      "output_tokens": 4964,
+      "cache_read_tokens": 691637,
+      "cache_creation_tokens": 13533,
+      "summary": "**Root cause:** The ADS1115 sends its 16-bit conversion result MSB-first over I2C (`b[0]` = high byte, `b[1]` = low byte), but `read_ain0()` assembled the code as `b[1] << 8 | b[0]`, swapping the byte order. This scrambled/garbled the sample value (and could flip its sign), producing readings unrelated to the applied voltage.\n\n**Fix:** `main/main.c:29` \u2014 changed `code = (int16_t)(b[1] << 8 | b[0])` to `code = (int16_t)(b[0] << 8 | b[1])`, matching the ADS1115's big-endian conversion register layout. Verified with `./build.sh` \u2014 builds clean."
     }
   ]
 }
