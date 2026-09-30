@@ -2,22 +2,19 @@
 Last updated: 2026-09-30 (+03:00)
 
 ## What was just done
-All four milestones' content is done. Benchmark smoke run finished (4/4 hidden tests passed, N=4,
-~$0.86), bench/README.md filled in; demo/run_demo.py ran and wrote demo/transcript.md. Final test
-pass running (scratch/final_tests.log), then the M4 commit.
+Renamed to dryflash (8eb7fb8) and re-verified: 120 unit, 22 integration, 6 sensor tests pass, and the
+host stdio smoke session against `docker run -i dryflash-sensors` passes.
 
 ## Current state of the project
-- M1 3049bd2, M2 b0c2d02, M3 7b61fe2, M4 WIP 94ac7c6 (+ final M4 commit pending). Nothing pushed.
-- Images: dryflash, dryflash-sensors (runtime), dryflash:test, :test-sensors.
-- qemu-patches 0001-0006; staged whole files in qemu-src/ (gitignored), regen script in scratchpad.
+All four milestones are committed (M1 3049bd2, M2 b0c2d02, M3 7b61fe2, M4 9110a34, rename 8eb7fb8).
+Nothing pushed or published. Images: dryflash, dryflash-sensors, dryflash:test, dryflash:test-sensors
+(the old esp32-sim-mcp* images are still on disk).
 
-## Active decisions
-See DECISIONS.md (M1-M4). Deterministic mode: -icount shift=3,sleep=off -seed 1; emu_reset = QEMU
-restart; uart_expect matches complete lines; sensors via SensorHub slicing on sim-clock.
-
-## Next steps
-Owner decides: project name (M1 report recommends boardless-mcp), whether to run the full
-benchmark (bench/README.md cost estimate), pushing/publishing, upstream PRs for patches 0005/0006.
+## Next steps (owner's calls)
+Push / first CI run on GitHub; image publishing (GPL source offer if the sensors image is
+distributed); harder benchmark tasks before spending on full passes (bench/README.md); upstream PRs
+for qemu-patches 0005/0006.
 
 ## Open questions
-Agent benchmark runs inherit the user-level CLAUDE.md unless --claude-config-dir is used.
+Benchmark agent runs inherit the user-level CLAUDE.md unless --claude-config-dir is used.
+The host ran low on memory twice (Claude Code stopped background jobs); foreground runs worked.
