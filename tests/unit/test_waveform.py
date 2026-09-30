@@ -3,7 +3,7 @@ import statistics
 
 import pytest
 
-from esp32_sim_mcp.sensors.waveform import WaveformError, parse_waveform
+from dryflash.sensors.waveform import WaveformError, parse_waveform
 
 
 def test_number_and_constant():

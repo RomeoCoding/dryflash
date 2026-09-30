@@ -1,15 +1,12 @@
-# esp32-sim-mcp
+# dryflash
 
 An MCP server that lets AI agents develop ESP32 firmware without a board. It builds ESP-IDF
 projects, runs them in Espressif's QEMU, and drives them the way a developer would: serial console,
 GDB, crash decoding. It also feeds realistic sensor data (accelerometer, ADC or any register-mapped
 chip) over the emulated I2C bus, on a virtual timeline that makes runs repeatable byte for byte.
 
-*esp32-sim-mcp is a working name; see [docs/M1_REPORT.md](docs/M1_REPORT.md#6-project-names) for the
-name candidates.*
-
 ```
-agent ──MCP/stdio──▶ esp32-sim-mcp (Docker: ESP-IDF v6.1 + QEMU + GDB)
+agent ──MCP/stdio──▶ dryflash (Docker: ESP-IDF v6.1 + QEMU + GDB)
                        ├─ project_build ─▶ idf.py ─▶ errors as file:line, sizes
                        ├─ emu_*  uart_* ─▶ QEMU esp32 / esp32c3 / esp32s3  (QMP, UART socket)
                        ├─ gdb_*          ─▶ xtensa/riscv GDB via GDB/MI ─▶ QEMU gdbstub
@@ -36,12 +33,12 @@ You need Docker (Docker Desktop on Windows/macOS; on Windows it needs WSL2). Bui
 from a clone of this repository:
 
 ```sh
-docker build -f docker/Dockerfile -t esp32-sim-mcp .                           # ~13 GB on disk (ESP-IDF v6.1, all targets)
+docker build -f docker/Dockerfile -t dryflash .                           # ~13 GB on disk (ESP-IDF v6.1, all targets)
 docker build -f docker/qemu-sensors.Dockerfile \
-             --build-arg BASE_IMAGE=esp32-sim-mcp -t esp32-sim-mcp-sensors .    # + patched QEMU, ~4 min
+             --build-arg BASE_IMAGE=dryflash -t dryflash-sensors .    # + patched QEMU, ~4 min
 ```
 
-`esp32-sim-mcp-sensors` is a superset (stock tools plus sensor injection and exact virtual-time
+`dryflash-sensors` is a superset (stock tools plus sensor injection and exact virtual-time
 control); use it unless you specifically want Espressif's unmodified QEMU.
 
 The server runs in a container and sees your firmware project through a bind mount at `/work`.
@@ -50,9 +47,9 @@ The server runs in a container and sees your firmware project through a bind mou
 
 ```sh
 # macOS / Linux
-claude mcp add esp32-sim -- docker run -i --rm -v "$(pwd)":/work esp32-sim-mcp-sensors
+claude mcp add dryflash -- docker run -i --rm -v "$(pwd)":/work dryflash-sensors
 # Windows (PowerShell)
-claude mcp add esp32-sim -- docker run -i --rm -v "${PWD}:/work" esp32-sim-mcp-sensors
+claude mcp add dryflash -- docker run -i --rm -v "${PWD}:/work" dryflash-sensors
 ```
 
 **Claude Desktop**: add to `claude_desktop_config.json` (Settings → Developer → Edit Config), with
@@ -61,9 +58,9 @@ an absolute path to your project:
 ```json
 {
   "mcpServers": {
-    "esp32-sim": {
+    "dryflash": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-v", "/home/me/my-firmware:/work", "esp32-sim-mcp-sensors"]
+      "args": ["run", "-i", "--rm", "-v", "/home/me/my-firmware:/work", "dryflash-sensors"]
     }
   }
 }
@@ -84,7 +81,7 @@ returns something like:
 To try it without an agent, `examples/hello_world` and `examples/vibration_monitor` are ready to run:
 
 ```sh
-docker run --rm -v "$(pwd)":/work esp32-sim-mcp-sensors test-run /work/examples/vibration_monitor scenario.yaml
+docker run --rm -v "$(pwd)":/work dryflash-sensors test-run /work/examples/vibration_monitor scenario.yaml
 ```
 
 ## Tools
@@ -106,7 +103,7 @@ the model: what it returns, when to call it, and what to call next.
 | `test_run(project_dir, scenario_file)` | Build + fresh session + scenario → pass/fail, per-step results, transcript, decoded crash. The tool CI and the benchmark use. |
 | `sensor_set(sensor, values, at_ms)`, `sensor_stream(sensor, waveform, at_ms)` | Change injected sensor data mid-run: constants, synthetic waveforms or recorded CSV. |
 
-The same scenario runner is available without MCP: `docker run ... esp32-sim-mcp[-sensors] test-run <project> <scenario.yaml>`
+The same scenario runner is available without MCP: `docker run ... dryflash[-sensors] test-run <project> <scenario.yaml>`
 (prints JSON; exit code 0 on pass).
 
 **Targets:** `esp32` has everything. `esp32c3` and `esp32s3` support build, run, UART, GDB and crash
@@ -166,7 +163,7 @@ The sensors image adds a small patch series to Espressif's QEMU (`qemu-patches/`
 - **`sim-clock`**: a host link that reads the virtual clock and pauses the VM at an exact virtual
   time.
 
-Sensor semantics live in Python (`src/esp32_sim_mcp/sensors/`). A model turns channel values (g,
+Sensor semantics live in Python (`src/dryflash/sensors/`). A model turns channel values (g,
 volts, ...) into register bytes for every configuration the firmware could select. So the host
 never has to react to what the firmware writes, which would make timing host-dependent.
 
@@ -238,13 +235,13 @@ Checked 2026-09-29/30:
 
 | | runs firmware | debugger | crash decoding | sensor data | local / offline |
 |---|---|---|---|---|---|
-| **esp32-sim-mcp** | QEMU (esp32, c3, s3) | GDB/MI | yes | I2C, deterministic | yes (Docker) |
+| **dryflash** | QEMU (esp32, c3, s3) | GDB/MI | yes | I2C, deterministic | yes (Docker) |
 | [ESP-IDF Tools MCP](https://developer.espressif.com/blog/2026/04/esp-idf-tools-mcp-server/) (built into `idf.py`, IDF 6.0+) | no: set_target, build, flash, clean | no | no | no | yes |
 | [Wokwi CLI MCP mode](https://docs.wokwi.com/wokwi-ci/mcp-support) | Wokwi simulator | no | no | Wokwi parts | no: cloud, needs `WOKWI_CLI_TOKEN`; marked experimental |
 | [atomicdog/renode-mcp](https://github.com/atomicdog/renode-mcp) | Renode | no | no | no | yes; thin wrapper (13 tools, one commit) |
 
 Wokwi simulates many more parts, but runs in the cloud and needs an account and token.
-esp32-sim-mcp is local and free, gives deterministic replay, and uses Espressif's own QEMU and
+dryflash is local and free, gives deterministic replay, and uses Espressif's own QEMU and
 toolchain.
 
 ## Benchmark
@@ -270,15 +267,15 @@ such claim is made.
 ## Development
 
 ```sh
-docker build -f docker/Dockerfile --target test -t esp32-sim-mcp:test .
-docker build -f docker/qemu-sensors.Dockerfile --build-arg BASE_IMAGE=esp32-sim-mcp:test -t esp32-sim-mcp:test-sensors .
+docker build -f docker/Dockerfile --target test -t dryflash:test .
+docker build -f docker/qemu-sensors.Dockerfile --build-arg BASE_IMAGE=dryflash:test -t dryflash:test-sensors .
 scripts/dev-test.sh                                  # unit tests, QEMU-free (<10 s)
 scripts/dev-test.sh -m integration                   # real builds and QEMU sessions
-IMAGE=esp32-sim-mcp:test-sensors scripts/dev-test.sh -m sensors
-python scripts/smoke_session.py --docker esp32-sim-mcp   # stdio MCP session end to end
+IMAGE=dryflash:test-sensors scripts/dev-test.sh -m sensors
+python scripts/smoke_session.py --docker dryflash   # stdio MCP session end to end
 ```
 
-The Python code is `src/esp32_sim_mcp/` (Python 3.12, MCP SDK 2.2, dependencies pinned in `uv.lock`).
+The Python code is `src/dryflash/` (Python 3.12, MCP SDK 2.2, dependencies pinned in `uv.lock`).
 Design decisions are in [DECISIONS.md](DECISIONS.md), bugs found in ESP-IDF/QEMU in
 [docs/UPSTREAM_ISSUES.md](docs/UPSTREAM_ISSUES.md), and the feasibility study in
 [docs/M1_REPORT.md](docs/M1_REPORT.md). CI (`.github/workflows/ci.yml`) builds both images with

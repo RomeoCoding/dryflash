@@ -8,7 +8,7 @@ pass running (scratch/final_tests.log), then the M4 commit.
 
 ## Current state of the project
 - M1 3049bd2, M2 b0c2d02, M3 7b61fe2, M4 WIP 94ac7c6 (+ final M4 commit pending). Nothing pushed.
-- Images: esp32-sim-mcp, esp32-sim-mcp-sensors (runtime), esp32-sim-mcp:test, :test-sensors.
+- Images: dryflash, dryflash-sensors (runtime), dryflash:test, :test-sensors.
 - qemu-patches 0001-0006; staged whole files in qemu-src/ (gitignored), regen script in scratchpad.
 
 ## Active decisions

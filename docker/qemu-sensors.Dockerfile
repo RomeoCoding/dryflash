@@ -34,7 +34,7 @@ RUN cd qemu && ./configure \
         --bindir=bin --datadir=share/qemu --prefix=/opt/qemu --with-suffix="" \
         --target-list=xtensa-softmmu --without-default-features \
         --enable-gcrypt --enable-pixman --enable-slirp --enable-stack-protector \
-        --extra-cflags=-Werror --with-pkgversion="${QEMU_VER}+esp32-sim-mcp" \
+        --extra-cflags=-Werror --with-pkgversion="${QEMU_VER}+dryflash" \
     && ninja -C build -j8 install \
     && find /opt/qemu/share/qemu -maxdepth 1 -mindepth 1 -not -name 'esp*.bin' -exec rm -rf {} +
 
@@ -48,4 +48,4 @@ RUN Q=/opt/esp/tools/qemu-xtensa/${QEMU_VER}/qemu/bin/qemu-system-xtensa; \
             libfdt1 libpixman-1-0 libgcrypt20 libslirp0 libglib2.0-0t64 \
         && rm -rf /var/lib/apt/lists/*; \
     fi \
-    && "$Q" --version | grep -q esp32-sim-mcp
+    && "$Q" --version | grep -q dryflash

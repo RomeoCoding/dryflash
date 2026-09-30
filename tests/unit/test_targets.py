@@ -1,6 +1,6 @@
 import pytest
 
-from esp32_sim_mcp.targets import TARGETS, get_target, UnknownTargetError
+from dryflash.targets import TARGETS, get_target, UnknownTargetError
 
 
 def test_esp32_is_the_only_sensor_target():

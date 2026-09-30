@@ -21,8 +21,8 @@ from .sensors.hub import attach_sensors
 from .targets import get_target
 from .uart import UartBuffer
 
-RUN_ROOT = Path(os.environ.get("ESP32_SIM_MCP_RUN_ROOT", tempfile.gettempdir())) / "esp32-sim-mcp" / "runs"
-EFUSE_CACHE = Path(tempfile.gettempdir()) / "esp32-sim-mcp" / "efuse"
+RUN_ROOT = Path(os.environ.get("DRYFLASH_RUN_ROOT", tempfile.gettempdir())) / "dryflash" / "runs"
+EFUSE_CACHE = Path(tempfile.gettempdir()) / "dryflash" / "efuse"
 
 # Wall-clock seconds per virtual second measured in M1 (docs/M1_REPORT.md, question 4); used only
 # when the emulator cannot stop at an exact virtual time.

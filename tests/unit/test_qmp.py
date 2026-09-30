@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from esp32_sim_mcp.qmp import QmpClient, QmpError
+from dryflash.qmp import QmpClient, QmpError
 
 
 class FakeQmp:

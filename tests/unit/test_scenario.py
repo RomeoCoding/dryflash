@@ -1,6 +1,6 @@
 import pytest
 
-from esp32_sim_mcp.scenario import ScenarioError, load_scenario, parse_scenario
+from dryflash.scenario import ScenarioError, load_scenario, parse_scenario
 
 MINIMAL = """
 name: hello

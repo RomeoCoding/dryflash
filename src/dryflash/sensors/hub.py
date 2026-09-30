@@ -19,8 +19,8 @@ from typing import Any
 from .link import ClockLink, SensorLink
 from .models import SensorModel, SensorSpecError, make_model
 
-CHUNK_NS = int(os.environ.get("ESP32_SIM_MCP_CHUNK_NS", 100_000_000))  # refill slice (virtual ns)
-PREFILL_NS = int(os.environ.get("ESP32_SIM_MCP_PREFILL_NS", 2 * CHUNK_NS))
+CHUNK_NS = int(os.environ.get("DRYFLASH_CHUNK_NS", 100_000_000))  # refill slice (virtual ns)
+PREFILL_NS = int(os.environ.get("DRYFLASH_PREFILL_NS", 2 * CHUNK_NS))
 
 _caps_cache: dict[str, set[str]] = {}
 
@@ -252,7 +252,7 @@ async def attach_sensors(session: Any, specs: list[dict]) -> list[str]:
         raise SensorSpecError(f"sensors are supported only on esp32, not {session.target.name}")
     if specs and "i2c-sim-sensor" not in caps:
         raise SensorSpecError("this QEMU has no i2c-sim-sensor device: sensor injection needs the "
-                              "esp32-sim-mcp-sensors image (docker/qemu-sensors.Dockerfile)")
+                              "dryflash-sensors image (docker/qemu-sensors.Dockerfile)")
     if "sim-clock" not in caps:
         return []
     base = Path(session.config.project_dir) if session.config.project_dir else None

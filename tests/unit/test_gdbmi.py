@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from esp32_sim_mcp.gdbmi import Debugger, GdbError
+from dryflash.gdbmi import Debugger, GdbError
 
 FAKE = [sys.executable, str(Path(__file__).parent / "fixtures" / "fake_gdb.py")]
 

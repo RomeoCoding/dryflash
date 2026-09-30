@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from esp32_sim_mcp.qemu_cmd import QemuOptions, build_qemu_cmdline
-from esp32_sim_mcp.targets import get_target
+from dryflash.qemu_cmd import QemuOptions, build_qemu_cmdline
+from dryflash.targets import get_target
 
 
 def _opts(**kw):

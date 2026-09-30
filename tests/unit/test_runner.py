@@ -3,9 +3,9 @@ import re
 
 import pytest
 
-from esp32_sim_mcp.runner import run_scenario
-from esp32_sim_mcp.scenario import parse_scenario
-from esp32_sim_mcp.uart import UartBuffer
+from dryflash.runner import run_scenario
+from dryflash.scenario import parse_scenario
+from dryflash.uart import UartBuffer
 
 pytestmark = pytest.mark.anyio
 

@@ -5,7 +5,7 @@ the breakpoint, backtrace, resume, uart_expect the greeting, stop. (The greeting
 app_main itself, so the breakpoint has to be placed before the greeting is awaited.)
 
 Inside the image (default):   python scripts/smoke_session.py
-From the host via Docker:     python scripts/smoke_session.py --docker esp32-sim-mcp
+From the host via Docker:     python scripts/smoke_session.py --docker dryflash
 Exit code 0 on success; a transcript of every call is printed.
 """
 
@@ -30,7 +30,7 @@ def server_params(args) -> StdioServerParameters:
         repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         return StdioServerParameters(command="docker", args=[
             "run", "-i", "--rm", "-v", f"{repo}:/work", args.docker])
-    return StdioServerParameters(command=sys.executable, args=["-m", "esp32_sim_mcp"],
+    return StdioServerParameters(command=sys.executable, args=["-m", "dryflash"],
                                  env={**os.environ}, cwd=args.workdir)
 
 
@@ -67,7 +67,7 @@ async def main(args) -> None:
             funcs = [f["function"] for f in bt["frames"]]
             assert funcs[0] == "app_main" and "main_task" in funcs, funcs
             await call(c, "emu_continue", session_id=sid)
-            m = await call(c, "uart_expect", session_id=sid, pattern=r"Hello from esp32-sim-mcp!", timeout_s=30)
+            m = await call(c, "uart_expect", session_id=sid, pattern=r"Hello from dryflash!", timeout_s=90)
             assert m["matched"], m
         finally:
             await call(c, "emu_stop", session_id=sid)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from esp32_sim_mcp.build import build_project
+from dryflash.build import build_project
 
 REPO = Path(__file__).resolve().parents[2]
 HELLO = REPO / "examples" / "hello_world"

@@ -1,6 +1,6 @@
 /*
  * vibration_monitor: reads an ADXL345 accelerometer over I2C at 400 Hz and prints the AC RMS of
- * each axis per block of 256 samples (0.64 s). In esp32-sim-mcp the ADXL345 is emulated and fed a
+ * each axis per block of 256 samples (0.64 s). In dryflash the ADXL345 is emulated and fed a
  * synthetic or recorded waveform, so the printed RMS can be checked against the injected signal.
  */
 #include <math.h>

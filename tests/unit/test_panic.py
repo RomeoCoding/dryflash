@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from esp32_sim_mcp.panic import decode_panic_text, find_panic_start, Frame
+from dryflash.panic import decode_panic_text, find_panic_start, Frame
 
 FIX = Path(__file__).parent / "fixtures"
 

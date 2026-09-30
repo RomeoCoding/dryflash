@@ -4,6 +4,6 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 if command -v cygpath >/dev/null; then ROOT=$(cygpath -w "$ROOT"); fi
-MSYS_NO_PATHCONV=1 exec docker run --rm -v qemu-dev:/dev-src -v esp32sim-builds:/tmp/esp32-sim-mcp \
-  -v "$ROOT:/opt/esp32-sim-mcp" "${IMAGE:-esp32-sim-mcp:test-sensors}" bash -c \
-  'cp /dev-src/qemu/build/qemu-system-xtensa $(dirname $(command -v qemu-system-xtensa))/ && cd /opt/esp32-sim-mcp && exec /opt/venv/bin/python -m pytest "$@"' _ "$@"
+MSYS_NO_PATHCONV=1 exec docker run --rm -v qemu-dev:/dev-src -v dryflash-builds:/tmp/dryflash \
+  -v "$ROOT:/opt/dryflash" "${IMAGE:-dryflash:test-sensors}" bash -c \
+  'cp /dev-src/qemu/build/qemu-system-xtensa $(dirname $(command -v qemu-system-xtensa))/ && cd /opt/dryflash && exec /opt/venv/bin/python -m pytest "$@"' _ "$@"

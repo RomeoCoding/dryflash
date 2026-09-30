@@ -13,7 +13,7 @@ static void tick(void)
 
 void app_main(void)
 {
-    printf("Hello from esp32-sim-mcp!\n");
+    printf("Hello from dryflash!\n");
     for (int i = 0; i < 5; i++) {
         tick();
         vTaskDelay(pdMS_TO_TICKS(100));

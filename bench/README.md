@@ -23,7 +23,7 @@ scenario** (`hidden/scenario.yaml`) the agent never sees.
 `<app>/reference.patch` applied (it must pass).
 
 ```sh
-docker run --rm -v "$(pwd)":/opt/esp32-sim-mcp -w /opt/esp32-sim-mcp esp32-sim-mcp-sensors \
+docker run --rm -v "$(pwd)":/opt/dryflash -w /opt/dryflash dryflash-sensors \
     /opt/venv/bin/python bench/verify.py            # writes bench/results/verify.json
 ```
 
@@ -35,7 +35,7 @@ app's failure reason).
 `harness.py` runs Claude Code headless on each task in a fresh workspace that contains only the
 app and `TASK.md`, in two configurations:
 
-- **mcp**: this server (the `esp32-sim-mcp-sensors` image) is the only MCP server
+- **mcp**: this server (the `dryflash-sensors` image) is the only MCP server
   (`--strict-mcp-config`); tools: Read, Edit, Write, Glob, Grep and the server's tools. No shell.
 - **baseline**: Read, Edit, Write, Glob, Grep and `./build.sh`, which compiles the project in
   Docker. No emulator, no hardware: the "compile and reason" workflow.

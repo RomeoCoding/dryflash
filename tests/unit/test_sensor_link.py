@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from esp32_sim_mcp.sensors.hub import sample_lines
-from esp32_sim_mcp.sensors.link import ClockLink, SensorLink
-from esp32_sim_mcp.sensors.models import make_model
+from dryflash.sensors.hub import sample_lines
+from dryflash.sensors.link import ClockLink, SensorLink
+from dryflash.sensors.models import make_model
 
 pytestmark = pytest.mark.anyio
 

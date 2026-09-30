@@ -1,6 +1,6 @@
 import re
 
-from esp32_sim_mcp.uart import UartBuffer
+from dryflash.uart import UartBuffer
 
 
 def test_cursor_reads_are_incremental():

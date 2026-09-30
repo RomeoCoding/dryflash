@@ -112,7 +112,7 @@ wheels = [
 ]
 
 [[package]]
-name = "esp32-sim-mcp"
+name = "dryflash"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

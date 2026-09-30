@@ -132,3 +132,12 @@ One entry per non-obvious call: the decision, the alternative, and why.
   hazard: ninja trusts mtimes, and `copytree` preserves them, so a reused path silently tested a
   stale (already fixed) binary. The harness's per-task baseline build volume is removed for the
   same reason.
+
+## Release prep
+
+- **Renamed to `dryflash`** (the owner's choice after M1): Python package `dryflash`, CLI
+  `dryflash`, images `dryflash` and `dryflash-sensors`, MCP server name `dryflash`, env vars
+  `DRYFLASH_*`, QEMU pkgversion suffix `+dryflash`. Checked 2026-09-30: no PyPI package
+  (`dryflash`, `dryflash-mcp`), no GitHub repository, no Glama, mcp.so or PulseMCP entry. The
+  folder keeps its working name, as the brief asked; earlier entries in this file use the old
+  name.

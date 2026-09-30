@@ -28,7 +28,7 @@ from .session import SessionConfig, SessionError, SessionManager, SessionNotFoun
 from .testrun import resolve_scenario, run_test
 from .targets import UnknownTargetError, get_target
 
-log = logging.getLogger("esp32_sim_mcp")
+log = logging.getLogger("dryflash")
 
 INSTRUCTIONS = """\
 Build ESP-IDF firmware, run it in Espressif's QEMU (no board needed), and drive it like a developer:
@@ -76,7 +76,7 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
             # Client disconnected (stdin closed) or the server is shutting down: no orphaned QEMUs.
             await mgr.stop_all()
 
-    app = MCPServer("esp32-sim-mcp", version=__version__, instructions=INSTRUCTIONS, lifespan=lifespan)
+    app = MCPServer("dryflash", version=__version__, instructions=INSTRUCTIONS, lifespan=lifespan)
 
     def tool(fn):
         app.tool()(_tool_errors(fn))
@@ -370,7 +370,7 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         s = mgr.get(session_id)
         if s.sensors is None or not s.sensors.models:
             raise ToolError("this session has no injected sensors: declare them in emu_start(sensors=[...]) "
-                            "(esp32 on the esp32-sim-mcp-sensors image)")
+                            "(esp32 on the dryflash-sensors image)")
         return s.sensors
 
     @tool
@@ -403,7 +403,7 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
 
 
 def main() -> None:
-    logging.basicConfig(level=os.environ.get("ESP32_SIM_MCP_LOG", "WARNING"),
+    logging.basicConfig(level=os.environ.get("DRYFLASH_LOG", "WARNING"),
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     BUILD_ROOT.mkdir(parents=True, exist_ok=True)
     create_server().run("stdio")

@@ -3,8 +3,8 @@
 Every step is a real MCP tool call over stdio to the server; the "fix" steps apply the benchmark's
 reference patches, standing in for the edit an agent would make.
 
-  docker run --rm -it -v <repo>:/opt/esp32-sim-mcp esp32-sim-mcp-sensors \
-      python /opt/esp32-sim-mcp/demo/run_demo.py            # writes demo/transcript.md
+  docker run --rm -it -v <repo>:/opt/dryflash dryflash-sensors \
+      python /opt/dryflash/demo/run_demo.py            # writes demo/transcript.md
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters
 
 REPO = Path(__file__).resolve().parents[1]
-WORK = Path("/tmp/esp32-sim-demo")
+WORK = Path("/tmp/dryflash-demo")
 LOG: list[str] = []
 
 
@@ -63,10 +63,10 @@ async def main() -> None:
     for app in ("null_config", "adc_byte_order"):
         shutil.copytree(REPO / "bench" / app / "app", WORK / app)
         shutil.copytree(REPO / "bench" / app / "hidden", WORK / app / "test")
-    server = StdioServerParameters(command=sys.executable, args=["-m", "esp32_sim_mcp"], env=dict(os.environ))
+    server = StdioServerParameters(command=sys.executable, args=["-m", "dryflash"], env=dict(os.environ))
     async with Client(server) as c:
         tools = (await c.list_tools()).tools
-        say(f"# esp32-sim-mcp demo\n\nConnected over stdio: {len(tools)} tools.")
+        say(f"# dryflash demo\n\nConnected over stdio: {len(tools)} tools.")
 
         say("\n## 1. A crash, decoded\n\nA config shell reboots when an operator types `set name` with no value.")
         cfg = str(WORK / "null_config")

@@ -5,7 +5,7 @@ hidden test and reference.patch stay out of reach), runs the agent, then runs th
 scenario with the sensors image's `test-run` CLI. Records success, wall time, turns, tokens and cost.
 
 Configurations
-  mcp       the esp32-sim-mcp server (sensors image) is the only MCP server; file tools, no shell
+  mcp       the dryflash server (sensors image) is the only MCP server; file tools, no shell
   baseline  file tools plus ./build.sh (compiles in Docker); no emulator, no hardware
 
 Examples (run on the host, with Docker and the claude CLI installed and logged in):
@@ -26,8 +26,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BASE_IMAGE = "esp32-sim-mcp"
-SENSORS_IMAGE = "esp32-sim-mcp-sensors"
+BASE_IMAGE = "dryflash"
+SENSORS_IMAGE = "dryflash-sensors"
 
 PROMPT_COMMON = (
     "You are working in an ESP-IDF v6.1 firmware project for the ESP32 (this folder). Read TASK.md "
@@ -36,7 +36,7 @@ PROMPT_COMMON = (
     "cause and your fix."
 )
 PROMPT_MCP = (
-    " You have the esp32-sim MCP server: it builds the project, runs it in Espressif's QEMU, reads "
+    " You have the dryflash MCP server: it builds the project, runs it in Espressif's QEMU, reads "
     "the serial console, debugs with GDB, decodes crashes and can inject I2C sensor data (ADXL345, "
     "ADS1115). Inside the server this project is mounted at /work. The hardware exactly as TASK.md "
     "describes is emulated; declare sensors in emu_start if the firmware reads one."
@@ -58,7 +58,7 @@ def make_workspace(task: str, config: str, root: Path) -> Path:
     shutil.copytree(HERE / task / "app", ws)
     shutil.copy(HERE / task / "TASK.md", ws / "TASK.md")
     if config == "baseline":
-        vol = f"esp32sim-bench-{task}"
+        vol = f"dryflash-bench-{task}"
         # A build cache left by an earlier run could be newer than the fresh copy's sources.
         subprocess.run(["docker", "volume", "rm", "-f", vol], capture_output=True)
         (ws / "build.sh").write_text(
@@ -73,11 +73,11 @@ def agent_command(config: str, ws: Path, model: str, max_turns: int) -> list[str
            "--output-format", "json", "--model", model, "--max-turns", str(max_turns),
            "--strict-mcp-config", "--setting-sources", "project", "--disable-slash-commands"]
     if config == "mcp":
-        mcp = {"mcpServers": {"esp32-sim": {"command": "docker", "args": [
+        mcp = {"mcpServers": {"dryflash": {"command": "docker", "args": [
             "run", "-i", "--rm", "-v", f"{docker_path(ws)}:/work", SENSORS_IMAGE]}}}
         cfg = ws.parent / f"{ws.name}.mcp.json"
         cfg.write_text(json.dumps(mcp, indent=2))
-        cmd += ["--mcp-config", str(cfg), "--allowedTools", "Read,Edit,Write,Glob,Grep,mcp__esp32-sim"]
+        cmd += ["--mcp-config", str(cfg), "--allowedTools", "Read,Edit,Write,Glob,Grep,mcp__dryflash"]
     else:
         cmd += ["--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(./build.sh),Bash(bash build.sh)"]
     return cmd

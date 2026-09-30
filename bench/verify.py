@@ -2,7 +2,7 @@
 and PASS once bench/<app>/reference.patch is applied.
 
 Runs inside the sensors image (four apps need sensor injection):
-  docker run --rm -v <repo>:/work esp32-sim-mcp-sensors python /work/bench/verify.py [app ...]
+  docker run --rm -v <repo>:/work dryflash-sensors python /work/bench/verify.py [app ...]
 Writes bench/results/verify.json and exits non-zero if any app does not discriminate.
 """
 
@@ -20,9 +20,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
-from esp32_sim_mcp.build import build_dir_for  # noqa: E402
-from esp32_sim_mcp.session import SessionManager  # noqa: E402
-from esp32_sim_mcp.testrun import run_test  # noqa: E402
+from dryflash.build import build_dir_for  # noqa: E402
+from dryflash.session import SessionManager  # noqa: E402
+from dryflash.testrun import run_test  # noqa: E402
 
 
 def apps() -> list[str]:
@@ -61,7 +61,7 @@ async def verify(name: str, work_root: Path) -> dict:
 
 
 async def main(selected: list[str], jobs: int) -> int:
-    work_root = Path("/tmp/esp32-sim-mcp/bench-verify")
+    work_root = Path("/tmp/dryflash/bench-verify")
     sem = asyncio.Semaphore(jobs)
 
     async def one(name):

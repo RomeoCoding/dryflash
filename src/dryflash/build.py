@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .targets import get_target
 
-BUILD_ROOT = Path(os.environ.get("ESP32_SIM_MCP_BUILD_ROOT", "/tmp/esp32-sim-mcp/builds"))
+BUILD_ROOT = Path(os.environ.get("DRYFLASH_BUILD_ROOT", "/tmp/dryflash/builds"))
 
 _GCC = re.compile(
     r"^(?P<file>[^\s:][^:\n]*?):(?P<line>\d+):(?:(?P<col>\d+):)?\s*"

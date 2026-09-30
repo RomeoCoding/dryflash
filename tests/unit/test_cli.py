@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from esp32_sim_mcp.cli import main
-from esp32_sim_mcp.testrun import resolve_scenario
+from dryflash.cli import main
+from dryflash.testrun import resolve_scenario
 
 
 def test_resolve_scenario_prefers_the_project_dir(tmp_path):

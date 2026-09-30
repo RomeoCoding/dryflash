@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from esp32_sim_mcp.build import parse_diagnostics, build_dir_for
+from dryflash.build import parse_diagnostics, build_dir_for
 
 PROJ = Path("/work/app")
 

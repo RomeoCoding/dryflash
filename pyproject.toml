@@ -1,5 +1,5 @@
 [project]
-name = "esp32-sim-mcp"
+name = "dryflash"
 version = "0.1.0"
 description = "MCP server that builds ESP32 firmware, runs it in Espressif's QEMU, debugs it and feeds it sensor data"
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-esp32-sim-mcp = "esp32_sim_mcp.cli:main"
+dryflash = "dryflash.cli:main"
 
 [dependency-groups]
 dev = [
@@ -30,7 +30,7 @@ requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/esp32_sim_mcp"]
+packages = ["src/dryflash"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -14,8 +14,8 @@ screen recording. It prints each tool call and the relevant part of its result, 
    2.5 V at t = 3 s of virtual time.
 
 ```sh
-docker run --rm -it -v "$(pwd)":/opt/esp32-sim-mcp esp32-sim-mcp-sensors \
-    /opt/venv/bin/python /opt/esp32-sim-mcp/demo/run_demo.py
+docker run --rm -it -v "$(pwd)":/opt/dryflash dryflash-sensors \
+    /opt/venv/bin/python /opt/dryflash/demo/run_demo.py
 ```
 
 The script pauses briefly after each step, for the recording; set `DEMO_FAST=1` to skip the

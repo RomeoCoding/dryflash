@@ -5,7 +5,7 @@ import re
 import pytest
 from mcp.client import Client
 
-from esp32_sim_mcp.server import create_server
+from dryflash.server import create_server
 
 from .conftest import REPO
 

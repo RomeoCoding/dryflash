@@ -1,4 +1,4 @@
-from esp32_sim_mcp.procutil import PortAllocator
+from dryflash.procutil import PortAllocator
 
 
 def test_ports_are_unique_while_held():

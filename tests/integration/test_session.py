@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from esp32_sim_mcp.session import SessionConfig, SessionManager
+from dryflash.session import SessionConfig, SessionManager
 
 from .conftest import CRASHLAB, HELLO
 
@@ -24,7 +24,7 @@ async def mgr():
 
 async def test_hello_world_boots_and_stops_cleanly(mgr, hello_build):
     s = await mgr.start(cfg(hello_build, HELLO))
-    r = await s.uart_expect(r"Hello from esp32-sim-mcp!", timeout=30)
+    r = await s.uart_expect(r"Hello from dryflash!", timeout=30)
     assert r["matched"], r
     assert s.status()["state"] == "running"
     run_dir, pid = s.run_dir, s.proc.pid
@@ -60,7 +60,7 @@ async def test_expect_timeout_reports_tail(mgr, hello_build):
     s = await mgr.start(cfg(hello_build, HELLO))
     r = await s.uart_expect("this never appears", timeout=2)
     assert not r["matched"] and r["reason"] == "timeout"
-    assert "Hello from esp32-sim-mcp!" in r["tail"]
+    assert "Hello from dryflash!" in r["tail"]
 
 
 async def test_deterministic_runs_are_byte_identical(mgr, hello_build):
@@ -110,7 +110,7 @@ async def test_pause_continue_and_reset(mgr, hello_build):
     assert s.status()["state"] == "running"
     before = s.uart.total
     await s.reset()
-    r = await s.uart_expect("Hello from esp32-sim-mcp!", timeout=30, cursor=before)
+    r = await s.uart_expect("Hello from dryflash!", timeout=30, cursor=before)
     assert r["matched"]
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from esp32_sim_mcp.sensors.models import SensorSpecError, make_model
+from dryflash.sensors.models import SensorSpecError, make_model
 
 
 def writes_by_bank(writes):

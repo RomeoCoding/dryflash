@@ -1,6 +1,6 @@
 """Command line: `serve` (the MCP server, default) and `test-run` (a scenario without an MCP client).
 
-  esp32-sim-mcp test-run <project_dir> <scenario.yaml> [--no-build] [--transcript]
+  dryflash test-run <project_dir> <scenario.yaml> [--no-build] [--transcript]
 
 Prints the test_run result as JSON and exits 0 on pass, 1 on fail, 2 on usage errors. CI and the
 benchmark's hidden acceptance tests use this.
@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="esp32-sim-mcp")
+    ap = argparse.ArgumentParser(prog="dryflash")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
     tr = sub.add_parser("test-run", help="build a project and run a scenario")

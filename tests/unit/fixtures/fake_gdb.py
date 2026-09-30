@@ -1,4 +1,4 @@
-"""A fake GDB speaking just enough GDB/MI for the unit tests of esp32_sim_mcp.gdbmi."""
+"""A fake GDB speaking just enough GDB/MI for the unit tests of dryflash.gdbmi."""
 
 import re
 import sys

@@ -25,7 +25,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           target: test
-          tags: esp32-sim-mcp:test
+          tags: dryflash:test
           load: true
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
@@ -37,25 +37,25 @@ jobs:
         with:
           context: .
           file: docker/qemu-sensors.Dockerfile
-          build-args: BASE_IMAGE=esp32-sim-mcp:test
-          tags: esp32-sim-mcp:test-sensors
+          build-args: BASE_IMAGE=dryflash:test
+          tags: dryflash:test-sensors
           load: true
           cache-from: type=gha,scope=qemu
           cache-to: type=gha,mode=max,scope=qemu
 
       - name: Unit tests (QEMU-free)
-        run: docker run --rm esp32-sim-mcp:test pytest -q
+        run: docker run --rm dryflash:test pytest -q
 
       - name: Integration tests (stock QEMU)
-        run: docker run --rm esp32-sim-mcp:test pytest -q -m integration
+        run: docker run --rm dryflash:test pytest -q -m integration
 
       - name: Sensor injection tests (patched QEMU; includes the vibration_monitor demo run twice)
-        run: docker run --rm esp32-sim-mcp:test-sensors pytest -q -m sensors
+        run: docker run --rm dryflash:test-sensors pytest -q -m sensors
 
       - name: Demo app via the test-run CLI
         run: >
-          docker run --rm esp32-sim-mcp:test-sensors
-          test-run /opt/esp32-sim-mcp/examples/vibration_monitor scenario.yaml
+          docker run --rm dryflash:test-sensors
+          test-run /opt/dryflash/examples/vibration_monitor scenario.yaml
 
   runtime-images:
     runs-on: ubuntu-24.04
@@ -69,7 +69,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           target: base
-          tags: esp32-sim-mcp:latest
+          tags: dryflash:latest
           load: true
           cache-from: type=gha,scope=base
       - name: Build sensors runtime image
@@ -77,11 +77,11 @@ jobs:
         with:
           context: .
           file: docker/qemu-sensors.Dockerfile
-          build-args: BASE_IMAGE=esp32-sim-mcp:latest
-          tags: esp32-sim-mcp-sensors:latest
+          build-args: BASE_IMAGE=dryflash:latest
+          tags: dryflash-sensors:latest
           load: true
           cache-from: type=gha,scope=qemu
       - name: Smoke test the MCP server over stdio (client on the runner, server in Docker)
         run: |
           python3 -m venv /tmp/client && /tmp/client/bin/pip install -q mcp==2.2.0
-          /tmp/client/bin/python scripts/smoke_session.py --docker esp32-sim-mcp:latest
+          /tmp/client/bin/python scripts/smoke_session.py --docker dryflash:latest

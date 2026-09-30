@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from esp32_sim_mcp.panic import decode_panic_text, make_addr2line_symbolizer
-from esp32_sim_mcp.session import SessionConfig, SessionManager
+from dryflash.panic import decode_panic_text, make_addr2line_symbolizer
+from dryflash.session import SessionConfig, SessionManager
 
 from .conftest import CRASHLAB
 

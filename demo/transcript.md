@@ -1,4 +1,4 @@
-# esp32-sim-mcp demo
+# dryflash demo
 
 Connected over stdio: 22 tools.
 
@@ -6,7 +6,7 @@ Connected over stdio: 22 tools.
 
 A config shell reboots when an operator types `set name` with no value.
 
-**agent → `project_build`** `{"project_dir": "/tmp/esp32-sim-demo/null_config"}`
+**agent → `project_build`** `{"project_dir": "/tmp/dryflash-demo/null_config"}`
 ```json
 {
   "ok": true,
@@ -39,7 +39,7 @@ A config shell reboots when an operator types `set name` with no value.
 }
 ```  (69.2s)
 
-**agent → `emu_start`** `{"project_dir": "/tmp/esp32-sim-demo/null_config"}`
+**agent → `emu_start`** `{"project_dir": "/tmp/dryflash-demo/null_config"}`
 ```json
 {
   "session_id": "s1",
@@ -132,7 +132,7 @@ A config shell reboots when an operator types `set name` with no value.
 +        if (key == NULL || value == NULL) {
 ```
 
-**agent → `test_run`** `{"project_dir": "/tmp/esp32-sim-demo/null_config", "scenario_file": "test/scenario.yaml"}`
+**agent → `test_run`** `{"project_dir": "/tmp/dryflash-demo/null_config", "scenario_file": "test/scenario.yaml"}`
 ```json
 {
   "passed": true,
@@ -216,7 +216,7 @@ A config shell reboots when an operator types `set name` with no value.
 
 A voltmeter reads an ADS1115 ADC over I2C. The test injects 1.234 V on AIN0, then 2.5 V at t = 3 s of virtual time.
 
-**agent → `test_run`** `{"project_dir": "/tmp/esp32-sim-demo/adc_byte_order", "scenario_file": "test/scenario.yaml"}`
+**agent → `test_run`** `{"project_dir": "/tmp/dryflash-demo/adc_byte_order", "scenario_file": "test/scenario.yaml"}`
 ```json
 {
   "passed": false,
@@ -231,7 +231,7 @@ A voltmeter reads an ADS1115 ADC over I2C. The test injects 1.234 V on AIN0, the
 +    int16_t code = (int16_t)(b[0] << 8 | b[1]);   /* registers are big-endian */
 ```
 
-**agent → `test_run`** `{"project_dir": "/tmp/esp32-sim-demo/adc_byte_order", "scenario_file": "test/scenario.yaml"}`
+**agent → `test_run`** `{"project_dir": "/tmp/dryflash-demo/adc_byte_order", "scenario_file": "test/scenario.yaml"}`
 ```json
 {
   "passed": true,
