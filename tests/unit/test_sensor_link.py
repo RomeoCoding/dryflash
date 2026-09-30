@@ -109,3 +109,48 @@ def test_sample_lines_non_integer_period_has_no_drift():
     m = make_model({"model": "ads1115", "name": "a", "rate_hz": 3, "waveform": {"ain0": 1.0}})
     times = sorted({int(line.split()[1]) for line in sample_lines(m, 0, 1_000_000_000)})
     assert times == [0, 333_333_333, 666_666_667]
+
+
+class _DeadLink:
+    errors: list = []
+
+    async def send(self, lines):
+        raise ConnectionResetError("Connection lost")
+
+    async def sync(self):
+        raise ConnectionResetError("Connection lost")
+
+    async def close(self):
+        pass
+
+
+class _Session:
+    def __init__(self, alive):
+        self.alive = alive
+        self.state = "running"
+        self.run_dir = "/tmp"
+
+
+async def test_stop_event_during_shutdown_does_not_escape():
+    """The CI failure: a last slice refill hits a closed socket while the session stops."""
+    from dryflash.sensors.hub import SensorHub
+
+    m = make_model({"model": "adxl345", "name": "a", "waveform": {"z": 1.0}})
+    hub = SensorHub(_Session(alive=False), [m])
+    hub.links = [_DeadLink()]
+    await hub._handle_stop(hub.horizon)          # must not raise
+    assert hub.stop_error is None
+
+    live = SensorHub(_Session(alive=True), [m])
+    live.links = [_DeadLink()]
+    await live._handle_stop(live.horizon)        # alive: recorded, not raised
+    assert "ConnectionResetError" in live.stop_error
+
+
+async def test_events_after_close_are_ignored():
+    from dryflash.sensors.hub import SensorHub
+
+    hub = SensorHub(_Session(alive=True), [])
+    await hub.close()
+    hub._on_stopped(123)
+    assert not hub._stop_tasks

@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .link import ClockLink, SensorLink
+from ..qmp import QmpError
+from .link import ClockLink, LinkError, SensorLink
 from .models import SensorModel, SensorSpecError, make_model
 
 CHUNK_NS = int(os.environ.get("DRYFLASH_CHUNK_NS", 100_000_000))  # refill slice (virtual ns)
@@ -83,6 +84,8 @@ class SensorHub:
         self._lock = asyncio.Lock()
         self._stop_tasks: set[asyncio.Task] = set()
         self.refills = 0
+        self._closing = False
+        self.stop_error: str | None = None
 
     # ----- QEMU wiring ---------------------------------------------------------------------------
     def _sock(self, name: str) -> Path:
@@ -100,6 +103,8 @@ class SensorHub:
 
     async def connect(self) -> None:
         """Connect to the freshly started (still halted) QEMU and preload the first slices."""
+        self._closing = False
+        self.stop_error = None
         self.clock = await ClockLink.connect(self._sock("simclk"), on_stopped=self._on_stopped)
         self.links = [await SensorLink.connect(self._sock(f"sens{i}"), on_guest_write=m.on_guest_write)
                       for i, m in enumerate(self.models)]
@@ -131,11 +136,24 @@ class SensorHub:
         self.user_paused = True
 
     def _on_stopped(self, ns: int) -> None:
+        if self._closing:
+            return  # a final stop event racing the session's shutdown
         t = asyncio.create_task(self._handle_stop(ns))
         self._stop_tasks.add(t)
         t.add_done_callback(self._stop_tasks.discard)
 
     async def _handle_stop(self, ns: int) -> None:
+        try:
+            await self._handle_stop_locked(ns)
+        except (ConnectionError, LinkError, QmpError) as e:
+            # QEMU going away mid-refill is expected while the session stops; anything else is
+            # recorded (and wakes a waiting emu_run_for) instead of dying as an orphaned task.
+            if self._closing or not self.session.alive:
+                return
+            self.stop_error = f"{type(e).__name__}: {e}"
+            self._user_event.set()
+
+    async def _handle_stop_locked(self, ns: int) -> None:
         async with self._lock:
             if self.models and ns >= self.horizon:
                 await self._refill(ns + CHUNK_NS)
@@ -174,7 +192,9 @@ class SensorHub:
         self.session.state = "running"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while not self._user_event.is_set():
+        while not self._user_event.is_set() or self.stop_error:
+            if self.stop_error:
+                raise RuntimeError(f"virtual-time control failed: {self.stop_error}")
             if not self.session.alive:
                 raise RuntimeError(f"session ended before reaching the target time: {self.session.exit_reason}")
             if loop.time() > deadline:
@@ -236,8 +256,11 @@ class SensorHub:
         pass
 
     async def close(self) -> None:
-        for t in list(self._stop_tasks):
+        self._closing = True
+        tasks = list(self._stop_tasks)
+        for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for link in self.links:
             await link.close()
         if self.clock is not None:
