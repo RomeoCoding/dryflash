@@ -9,14 +9,30 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The sensors image is built FROM the base image. buildx's docker-container builder (needed for the
+# GitHub Actions layer cache) cannot see images loaded into the local Docker daemon, so each job
+# runs a throwaway registry on localhost:5000: base images are pushed there and pulled back.
+
 jobs:
   images-and-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
+    services:
+      registry:
+        image: registry:2
+        ports: ["5000:5000"]
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space (the ESP-IDF image is ~13 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
       # Base image (ESP-IDF v6.1 + server), test target with dev dependencies and test firmware.
       - name: Build test image
@@ -25,23 +41,30 @@ jobs:
           context: .
           file: docker/Dockerfile
           target: test
-          tags: dryflash:test
-          load: true
+          tags: localhost:5000/dryflash:test
+          push: true
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
       # Patched QEMU (qemu-patches/, GPL-2.0-or-later) on top of the test image. The QEMU build
-      # layer is cached by the patch contents, so it only rebuilds when the patches change.
+      # stage is cached by the patch contents, so it only rebuilds when the patches change.
       - name: Build sensors test image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/qemu-sensors.Dockerfile
-          build-args: BASE_IMAGE=dryflash:test
-          tags: dryflash:test-sensors
-          load: true
+          build-args: BASE_IMAGE=localhost:5000/dryflash:test
+          tags: localhost:5000/dryflash:test-sensors
+          push: true
           cache-from: type=gha,scope=qemu
           cache-to: type=gha,mode=max,scope=qemu
+
+      - name: Pull test images
+        run: |
+          docker pull localhost:5000/dryflash:test-sensors
+          docker tag localhost:5000/dryflash:test-sensors dryflash:test-sensors
+          docker pull localhost:5000/dryflash:test
+          docker tag localhost:5000/dryflash:test dryflash:test
 
       - name: Unit tests (QEMU-free)
         run: docker run --rm dryflash:test pytest -q
@@ -59,29 +82,46 @@ jobs:
 
   runtime-images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
+    services:
+      registry:
+        image: registry:2
+        ports: ["5000:5000"]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free disk space (the ESP-IDF image is ~13 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
       - name: Build runtime image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           target: base
-          tags: dryflash:latest
-          load: true
+          tags: localhost:5000/dryflash:latest
+          push: true
           cache-from: type=gha,scope=base
+
       - name: Build sensors runtime image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/qemu-sensors.Dockerfile
-          build-args: BASE_IMAGE=dryflash:latest
-          tags: dryflash-sensors:latest
-          load: true
+          build-args: BASE_IMAGE=localhost:5000/dryflash:latest
+          tags: localhost:5000/dryflash-sensors:latest
+          push: true
           cache-from: type=gha,scope=qemu
+
       - name: Smoke test the MCP server over stdio (client on the runner, server in Docker)
         run: |
+          docker pull localhost:5000/dryflash:latest
           python3 -m venv /tmp/client && /tmp/client/bin/pip install -q mcp==2.2.0
-          /tmp/client/bin/python scripts/smoke_session.py --docker dryflash:latest
+          /tmp/client/bin/python scripts/smoke_session.py --docker localhost:5000/dryflash:latest
