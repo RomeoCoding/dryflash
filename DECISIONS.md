@@ -70,3 +70,37 @@ One entry per non-obvious call: the decision, the alternative, and why.
   covers it.
 - **The smoke session breaks at `app_main` before waiting for the greeting.** Why: `app_main`
   prints the greeting, so a breakpoint set after it can never be hit.
+
+## M3
+
+- **One generic C device (`i2c-sim-sensor`, 549 lines) plus a tiny `sim-clock` device (201
+  lines), not per-chip C models.** Why: the brief puts sensor semantics in Python. Four generic
+  mechanisms cover the ADXL345 and ADS1115 without chip code: register stride, one bank selector,
+  read-set bits and read-only ranges.
+- **Banked chips get one write per bank for every sample**, instead of the host reacting to the
+  firmware's configuration writes. Why: a host reaction arrives at a host-dependent time, which
+  would break determinism. The cost is volume (ADS1115: 64 writes per sample), which the line
+  protocol handles comfortably at the default rates (ADXL345 400 Hz, ADS1115 250 Hz).
+- **Determinism by slicing, not by bulk preload:** the host sends samples up to a horizon, and
+  `sim-clock` pauses the VM exactly there. The host then sends the next 100 ms, waits for a sync
+  acknowledgement from every sensor, and resumes. Alternatives: preload a whole run (memory
+  grows with run length, and mid-run changes aren't possible), or stream while running (any
+  host-driven `timer_mod` on a running VM kicks the round-robin vCPU loop at a host-dependent
+  moment). The same stop mechanism makes `emu_run_for` exact.
+- **Line-oriented ASCII protocol on the chardevs.** Alternative: a binary framing. Why: it is
+  debuggable with `socat`, reviewable in C, and fast enough (parsing is not the bottleneck).
+- **`sensor_set` takes an optional `at_ms`.** Why: "now" on a running VM depends on host timing.
+  Changes at an explicit virtual time (or while paused) are reproducible. A change that lands
+  inside already-queued data re-sends those samples; equal timestamps apply in arrival order,
+  so the re-sent ones win.
+- **`uart_expect` matches complete lines by default.** Why: output streams in chunks, and
+  `rms_x=([0-9.]+)` matched a half-received `0.` in the first demo run. An agent would hit the
+  same trap with any `value=(\d+)` pattern.
+- **Two QEMU fixes outside the device itself (patches 0005, 0006) were needed for determinism.**
+  Why: see UPSTREAM_ISSUES 5 and 6. Both are small, justified in their commit messages, and pass
+  checkpatch; the alternative (documenting "almost deterministic") would have failed the
+  byte-identical requirement.
+- **Deterministic mode also passes `-seed 1`.** Why: the esp32 RNG peripheral reads
+  `qemu_guest_getrandom`, which is host entropy otherwise.
+- **Sensor waveforms restart at virtual time 0 after `emu_reset`.** Why: the reset restarts QEMU,
+  and its virtual clock starts again from 0; the waveform timeline stays the same.

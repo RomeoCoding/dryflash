@@ -120,6 +120,9 @@ class Session:
                            icount_shift=cfg.icount_shift, reboot=cfg.reboot, watchdogs=cfg.watchdogs,
                            extra_args=self._extra_args + list(cfg.extra_args))
         self.cmdline = build_qemu_cmdline(opts)
+        # Sockets left by a previous QEMU (emu_reset) must not be mistaken for the new ones.
+        for sock in self.run_dir.glob("*.sock"):
+            sock.unlink(missing_ok=True)
         self._exited = asyncio.Event()
         self.exit_code = self.exit_reason = None
         self.proc = await asyncio.create_subprocess_exec(
@@ -151,7 +154,7 @@ class Session:
         for _ in range(200):
             try:
                 return await asyncio.open_unix_connection(str(path))
-            except (FileNotFoundError, ConnectionRefusedError):
+            except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError):
                 await asyncio.sleep(0.05)
         raise SessionError(f"UART socket {path} never appeared")
 

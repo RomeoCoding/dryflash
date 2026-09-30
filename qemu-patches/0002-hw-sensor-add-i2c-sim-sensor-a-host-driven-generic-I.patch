@@ -1,7 +1,7 @@
-From 2e5e378ec766ad942b71f77832b417035f0b89bb Mon Sep 17 00:00:00 2001
+From 017f5affa655268a0614ff56a8bbd6a2207f3a83 Mon Sep 17 00:00:00 2001
 From: Romeo Mattar <romeomat.work@gmail.com>
-Date: Tue, 29 Sep 2026 17:40:39 +0300
-Subject: [PATCH 2/4] hw/sensor: add i2c-sim-sensor, a host-driven generic I2C
+Date: Wed, 30 Sep 2026 06:51:32 +0300
+Subject: [PATCH 2/6] hw/sensor: add i2c-sim-sensor, a host-driven generic I2C
  register device
 
 Emulating firmware that reads I2C sensors needs realistic, time-varying

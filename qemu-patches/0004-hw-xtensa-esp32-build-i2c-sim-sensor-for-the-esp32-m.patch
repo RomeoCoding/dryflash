@@ -1,7 +1,7 @@
-From 985287b4c117979d376ce7b26eda0c89a945d920 Mon Sep 17 00:00:00 2001
+From 541809c77d933c536dbb9b18243650807d4966e1 Mon Sep 17 00:00:00 2001
 From: Romeo Mattar <romeomat.work@gmail.com>
-Date: Tue, 29 Sep 2026 17:40:40 +0300
-Subject: [PATCH 4/4] hw/xtensa/esp32: build i2c-sim-sensor for the esp32
+Date: Wed, 30 Sep 2026 06:51:33 +0300
+Subject: [PATCH 4/6] hw/xtensa/esp32: build i2c-sim-sensor for the esp32
  machine
 
 The esp32 machine is the only Espressif machine with an I2C controller

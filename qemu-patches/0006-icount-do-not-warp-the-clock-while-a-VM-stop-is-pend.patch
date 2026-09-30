@@ -1,0 +1,82 @@
+From ac1017ce7050c9ad767e2eed3338e7366047ec3b Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Wed, 30 Sep 2026 06:51:34 +0300
+Subject: [PATCH 6/6] icount: do not warp the clock while a VM stop is pending
+
+With -icount sleep=off, icount_start_warp_timer() advances
+QEMU_CLOCK_VIRTUAL to the next timer deadline whenever the VM is running
+and every vCPU is idle. Between a stop request (vm_stop() from a vCPU
+thread, a debug stop, qemu_system_vmstop_request()) and the main loop
+handling it, the run state is still RUNNING while the vCPUs are halted
+for the stop, so the main loop takes them for a guest waiting on a timer
+and warps. The VM then pauses with the clock advanced to the next
+deadline (8.87 ms in the case that exposed it) instead of where the stop
+was requested, and whether the warp happens depends on host timing.
+
+Add qemu_vmstop_pending(), which reports a pending stop or debug request
+without consuming it, and skip the warp while one is pending.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ accel/tcg/icount-common.c |  5 ++++-
+ include/sysemu/runstate.h |  1 +
+ system/runstate.c         | 14 ++++++++++++++
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 30bf850..608e54b 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -298,8 +298,11 @@ void icount_start_warp_timer(void)
+     /*
+      * Nothing to do if the VM is stopped: QEMU_CLOCK_VIRTUAL timers
+      * do not fire, so computing the deadline does not make sense.
++     * The same holds while a stop is pending: the vCPUs are halted for it,
++     * not idle waiting for a timer, and warping now would advance the
++     * clock past the point where the stop was requested.
+      */
+-    if (!runstate_is_running()) {
++    if (!runstate_is_running() || qemu_vmstop_pending()) {
+         return;
+     }
+ 
+diff --git a/include/sysemu/runstate.h b/include/sysemu/runstate.h
+index 11c7ff3..f732490 100644
+--- a/include/sysemu/runstate.h
++++ b/include/sysemu/runstate.h
+@@ -99,6 +99,7 @@ void qemu_system_debug_request(void);
+ void qemu_system_vmstop_request(RunState reason);
+ void qemu_system_vmstop_request_prepare(void);
+ bool qemu_vmstop_requested(RunState *r);
++bool qemu_vmstop_pending(void);
+ ShutdownCause qemu_shutdown_requested_get(void);
+ ShutdownCause qemu_reset_requested_get(void);
+ void qemu_system_killed(int signal, pid_t pid);
+diff --git a/system/runstate.c b/system/runstate.c
+index c2c9afa..dc83f5b 100644
+--- a/system/runstate.c
++++ b/system/runstate.c
+@@ -502,6 +502,20 @@ static int qemu_debug_requested(void)
+     return r;
+ }
+ 
++/*
++ * Whether a VM stop or debug stop has been requested but not yet handled by
++ * the main loop. Unlike qemu_vmstop_requested() this does not consume it.
++ */
++bool qemu_vmstop_pending(void)
++{
++    bool pending;
++
++    qemu_mutex_lock(&vmstop_lock);
++    pending = vmstop_requested < RUN_STATE__MAX;
++    qemu_mutex_unlock(&vmstop_lock);
++    return pending || qatomic_read(&debug_requested);
++}
++
+ /*
+  * Reset the VM. Issue an event unless @reason is SHUTDOWN_CAUSE_NONE.
+  */
+-- 
+2.55.0.windows.3
+

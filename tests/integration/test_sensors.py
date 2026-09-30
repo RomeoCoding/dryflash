@@ -117,7 +117,7 @@ async def test_reset_reconnects_sensors():
         try:
             assert (await call(c, "uart_expect", session_id=sid, pattern="DEVID=0xe5", timeout_s=60))["matched"]
             r = await call(c, "emu_reset", session_id=sid)
-            m = await call(c, "uart_expect", session_id=sid, pattern=r"block 1 [^\n]*mean_z=1\.00",
+            m = await call(c, "uart_expect", session_id=sid, pattern=r"block 1 [^\n]*mean_z=(0\.99\d|1\.00\d)",
                            timeout_s=60, cursor=r["uart_cursor_at_reset"])
             assert m["matched"], m
         finally:

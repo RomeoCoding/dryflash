@@ -1,7 +1,7 @@
-From 917092782ed2387b5f9ddd51782dfff52fb23d84 Mon Sep 17 00:00:00 2001
+From a3de166e964a881b5084fc2d4cc29e720efd2da1 Mon Sep 17 00:00:00 2001
 From: Romeo Mattar <romeomat.work@gmail.com>
-Date: Tue, 29 Sep 2026 18:12:03 +0300
-Subject: [PATCH] hw/xtensa/esp32: reset the APP CPU synchronously
+Date: Wed, 30 Sep 2026 06:51:33 +0300
+Subject: [PATCH 5/6] hw/xtensa/esp32: reset the APP CPU synchronously
 
 Releasing the APP CPU from reset (DPORT_APPCPU_RESET, or a timer-group
 watchdog CPU reset) went through qemu_system_reset_request(), which the

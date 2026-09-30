@@ -28,7 +28,7 @@ class _LineLink:
             try:
                 reader, writer = await asyncio.open_unix_connection(str(path))
                 return cls(reader, writer, **kw)
-            except (FileNotFoundError, ConnectionRefusedError):
+            except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError):
                 if loop.time() >= deadline:
                     raise LinkError(f"chardev socket {path} did not accept connections within {timeout}s")
                 await asyncio.sleep(0.05)

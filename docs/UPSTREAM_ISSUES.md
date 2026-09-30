@@ -26,3 +26,19 @@ noted; the workaround is listed instead.
    (`rst:0x7 (TG0WDT_SYS_RESET)` right after `rst:0x1 (POWERON_RESET)`). With `-no-reboot`
    this second, guest-initiated reset shuts QEMU down. Timer-group watchdog state seems to
    survive the host reset. Workaround: `emu_reset` restarts the QEMU process.
+5. **Dual-core esp32 boots were not reproducible under `-icount`.** Releasing the APP CPU from
+   reset went through `qemu_system_reset_request()`, which the main loop services at a
+   host-dependent moment while the APP CPU may already be running. Two runs of the same image
+   showed APP CPU cycle counts 277 cycles apart (found by diffing `-d int` traces). *Patched* by
+   `qemu-patches/0005-*` (the reset is queued on the APP CPU with `async_run_on_cpu()`). This is
+   probably also the cause of item 2 (shift=5).
+6. **QEMU core: the icount warp advances the clock while a VM stop is pending.** Between a stop
+   request and the main loop handling it, the run state is still RUNNING and the vCPUs look idle,
+   so `icount_start_warp_timer()` jumped the clock to the next timer deadline (8.87 ms).
+   *Patched* by `qemu-patches/0006-*`. It affects any device- or debugger-requested stop, not
+   only this project.
+7. **QEMU core (not a bug, a constraint): `vm_stop()` from a `QEMU_CLOCK_VIRTUAL` timer callback
+   deadlocks**, because `pause_all_vcpus()` waits for the running timer list to finish. The
+   sim-clock requests the stop with `qemu_system_vmstop_request()` instead.
+8. **The esp32 RNG peripheral returns host entropy** (`qemu_guest_getrandom`); runs are only
+   reproducible with `-seed`. Expected QEMU behaviour, but easy to miss.

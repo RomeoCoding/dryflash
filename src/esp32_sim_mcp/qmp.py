@@ -33,7 +33,7 @@ class QmpClient:
             try:
                 reader, writer = await asyncio.open_unix_connection(str(path))
                 break
-            except (FileNotFoundError, ConnectionRefusedError):
+            except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError):
                 if loop.time() >= deadline:
                     raise TimeoutError(f"QMP socket {path} did not accept connections within {timeout}s")
                 await asyncio.sleep(0.05)

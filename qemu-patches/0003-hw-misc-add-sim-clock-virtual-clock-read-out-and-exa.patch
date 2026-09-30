@@ -1,7 +1,7 @@
-From 5384cb456f684bead2006fd2be38d21bfc7134db Mon Sep 17 00:00:00 2001
+From 5d7fc0776f4c2c3580dda0ac6cb77230675afaaa Mon Sep 17 00:00:00 2001
 From: Romeo Mattar <romeomat.work@gmail.com>
-Date: Tue, 29 Sep 2026 17:40:40 +0300
-Subject: [PATCH 3/4] hw/misc: add sim-clock, virtual clock read-out and
+Date: Wed, 30 Sep 2026 06:51:33 +0300
+Subject: [PATCH 3/6] hw/misc: add sim-clock, virtual clock read-out and
  exact-time stop
 
 QMP can pause a VM, but not at a given virtual time outside of
@@ -21,8 +21,8 @@ Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
 ---
  hw/misc/Kconfig     |   4 +
  hw/misc/meson.build |   1 +
- hw/misc/sim_clock.c | 187 ++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 192 insertions(+)
+ hw/misc/sim_clock.c | 197 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 202 insertions(+)
  create mode 100644 hw/misc/sim_clock.c
 
 diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
@@ -51,10 +51,10 @@ index 4c2b5b3..fb2547e 100644
  system_ss.add(when: 'CONFIG_PVPANIC_COMMON', if_true: files('pvpanic.c'))
 diff --git a/hw/misc/sim_clock.c b/hw/misc/sim_clock.c
 new file mode 100644
-index 0000000..94e0344
+index 0000000..920a342
 --- /dev/null
 +++ b/hw/misc/sim_clock.c
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,197 @@
 +/*
 + * Virtual clock control for host-driven simulation ("sim-clock")
 + *
@@ -84,6 +84,7 @@ index 0000000..94e0344
 +#include "qemu/timer.h"
 +#include "qemu/module.h"
 +#include "qapi/error.h"
++#include "hw/core/cpu.h"
 +#include "hw/qdev-core.h"
 +#include "hw/qdev-properties.h"
 +#include "hw/qdev-properties-system.h"
@@ -124,15 +125,24 @@ index 0000000..94e0344
 +static void sim_clock_expired(void *opaque)
 +{
 +    SimClockState *s = opaque;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    CPUState *cpu;
 +
 +    /*
-+     * Under -icount the vCPUs are given no budget past a pending
-+     * QEMU_CLOCK_VIRTUAL deadline, so they are parked exactly at @when while
-+     * the main loop runs this callback: the stop lands on the same guest
-+     * instruction on every run.
++     * With -icount no vCPU has budget past this deadline, so all of them
++     * are exactly here. Park every vCPU, then ask the main loop to stop the
++     * VM: a synchronous vm_stop() cannot be used from a timer callback (it
++     * waits for the running timers to finish), and without parking,
++     * round-robin TCG would keep running the other vCPUs until the request
++     * is handled. The icount warp leaves the clock alone while it is
++     * pending.
 +     */
-+    vm_stop(RUN_STATE_PAUSED);
-+    sim_clock_send(s, "X %" PRId64 "\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++    CPU_FOREACH(cpu) {
++        cpu_pause(cpu);
++    }
++    qemu_system_vmstop_request_prepare();
++    qemu_system_vmstop_request(RUN_STATE_PAUSED);
++    sim_clock_send(s, "X %" PRId64 "\n", now);
 +}
 +
 +static void sim_clock_command(SimClockState *s, char *line)
