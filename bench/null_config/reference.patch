@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:17.082626200 +0300
++++ b/main/main.c	2026-09-30 07:27:52.846907700 +0300
+@@ -37,7 +37,7 @@
+     if (strcmp(cmd, "set") == 0) {
+         char *key = strtok(NULL, " ");
+         char *value = strtok(NULL, " ");
+-        if (key == NULL) {
++        if (key == NULL || value == NULL) {
+             printf("error: usage: set <key> <value>\n");
+             return;
+         }

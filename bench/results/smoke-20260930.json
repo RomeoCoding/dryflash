@@ -1,0 +1,23 @@
+{
+  "run_id": "smoke-20260930",
+  "model": "claude-sonnet-5",
+  "results": [
+    {
+      "task": "null_config",
+      "config": "mcp",
+      "model": "claude-sonnet-5",
+      "success": true,
+      "hidden_test_reason": null,
+      "wall_s": 127.4,
+      "agent_exit": 0,
+      "agent_error": false,
+      "num_turns": 16,
+      "cost_usd": 0.19272840000000002,
+      "input_tokens": 32,
+      "output_tokens": 2296,
+      "cache_read_tokens": 576822,
+      "cache_creation_tokens": 13585,
+      "summary": "**Root cause:** In `handle()` (main/main.c), only `key` was checked for `NULL` after parsing a `set` command with `strtok`. When the operator omitted the value (e.g. `set name`), `value` was `NULL`, and `apply_setting()` passed it straight to `strncpy(cfg->name, value, ...)` / `atoi(value)`, dereferencing a null pointer and crashing/rebooting the device.\n\n**Fix:** Extended the existing guard to also check `value == NULL`, printing `error: usage: set <key> <value>` and returning before `apply_setting()` is ever called \u2014 one line changed in `main/main.c:40`.\n\nVerified in QEMU: `set name` now pri"
+    }
+  ]
+}

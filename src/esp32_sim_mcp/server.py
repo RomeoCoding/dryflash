@@ -20,12 +20,12 @@ from .build import BUILD_ROOT, build_dir_for, build_project
 from .gdbmi import GdbError
 from .panic import decode_panic_text, make_addr2line_symbolizer
 from .qmp import QmpError
-from .runner import run_scenario
-from .scenario import ScenarioError, load_scenario
+from .scenario import ScenarioError
 from .sensors.link import LinkError
 from .sensors.models import SensorSpecError
 from .sensors.waveform import WaveformError
 from .session import SessionConfig, SessionError, SessionManager, SessionNotFound
+from .testrun import resolve_scenario, run_test
 from .targets import UnknownTargetError, get_target
 
 log = logging.getLogger("esp32_sim_mcp")
@@ -363,29 +363,7 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         fix; it is also what CI and the benchmark run.
         """
         proj = _path(project_dir)
-        scen_path = _path(scenario_file) if Path(scenario_file).is_absolute() else (
-            (proj / scenario_file) if (proj / scenario_file).exists() else _path(scenario_file))
-        scenario = load_scenario(scen_path)
-        res = await build_project(proj, scenario.target) if build else None
-        if res is not None and not res.ok:
-            return {"passed": False, "reason": "build failed", "build": res.to_dict()}
-        bdir = build_dir_for(proj, scenario.target)
-        elf_path = bdir / json.loads((bdir / "project_description.json").read_text())["app_elf"]
-        emu = scenario.emulator
-        s = await mgr.start(SessionConfig(
-            target=scenario.target, flash_image=bdir / "flash_qemu.bin", elf=elf_path, project_dir=proj,
-            deterministic=emu.deterministic, icount_shift=emu.icount_shift, reboot=emu.reboot,
-            watchdogs=emu.watchdogs, extra_args=list(emu.qemu_args), sensors=list(scenario.sensors)))
-        try:
-            result = await run_scenario(s, scenario)
-            if not result["passed"]:
-                crash = decode_panic_text(s.uart.tail(65536).decode(errors="replace"),
-                                          make_addr2line_symbolizer(s.target.addr2line, elf_path, proj))
-                if crash.kind != "none":
-                    result["panic"] = crash.to_dict()
-        finally:
-            await mgr.stop(s.id)
-        return result
+        return await run_test(mgr, proj, resolve_scenario(proj, scenario_file), build=build)
 
     # ------------------------------------------------------------------ sensors (sensors image)
     def _hub(session_id: str):

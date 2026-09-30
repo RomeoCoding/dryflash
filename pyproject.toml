@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-esp32-sim-mcp = "esp32_sim_mcp.server:main"
+esp32-sim-mcp = "esp32_sim_mcp.cli:main"
 
 [dependency-groups]
 dev = [

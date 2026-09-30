@@ -1,0 +1,11 @@
+OK   adc_byte_order         shipped=fail fixed=pass  (166.2s)  value -3.579 from 'ain0=-3.579 V' is outside [1.229, 1.239]
+OK   accel_scaling          shipped=fail fixed=pass  (167.4s)  value 0.25 from 'z=0.25 g' is outside [0.95, 1.05]
+OK   accel_wrong_register   shipped=fail fixed=pass  (167.6s)  value 90 from 'tilt=90.0 deg' is outside [43, 47]
+OK   adc_pga_threshold      shipped=fail fixed=pass  (162.4s)  value 1.9 from 'battery=1.90 V' is outside [3.75, 3.85]
+OK   freertos_race          shipped=fail fixed=pass  (163.9s)  value 1000 from 'total=1000 ' is outside [2000, 2000]
+OK   null_config            shipped=fail fixed=pass  (164.2s)  fail_on pattern 'Guru Meditation Error' matched: Guru Meditation Error: Core  0 panic'ed (LoadProhibited). Exception was unhandled.
+OK   stack_overflow         shipped=fail fixed=pass  (180.0s)  fail_on pattern '\\*\\*\\*ERROR\\*\\*\\* A stack overflow' matched: ***ERROR*** A stack overflow in task worker has been detected.
+OK   ringbuf_offbyone       shipped=fail fixed=pass  (183.1s)  timeout after 10.0s waiting for 'queue \\(8\\): 1 2 3 4 5 6 7 8\\r?\\n'
+OK   timer_units            shipped=fail fixed=pass  (183.9s)  value 19868 from 'uptime 2 s beats=19868' is outside [19, 21]
+OK   wdt_starvation         shipped=fail fixed=pass  (71.9s)  fail_on pattern 'task_wdt: Task watchdog got triggered' matched: task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog i
+10/10 hidden tests discriminate

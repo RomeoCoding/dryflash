@@ -1,0 +1,6 @@
+name: packet total is exact
+emulator: {deterministic: true}
+steps:
+  - expect: 'total=(\d+) '
+    timeout_s: 90
+    value_range: [2000, 2000]

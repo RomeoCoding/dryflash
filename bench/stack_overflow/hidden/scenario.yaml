@@ -1,0 +1,7 @@
+name: statistics complete without crashing
+emulator: {deterministic: true}
+steps:
+  - expect: 'stats: samples=5000 mean=([0-9.]+)'
+    timeout_s: 60
+    value_range: [480, 540]
+  - expect: 'worker done'

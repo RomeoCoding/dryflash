@@ -1,0 +1,17 @@
+name: shock detector reads 1 g at rest and alarms on a 3 g shock
+emulator: {deterministic: true}
+sensors:
+  - model: adxl345
+    name: accel
+    address: 0x53
+    rate_hz: 400
+    waveform: {z: 1.0}
+steps:
+  - expect: 'z=([-0-9.]+) g'
+    timeout_s: 60
+    value_range: [0.95, 1.05]
+  - expect_not: 'ALARM'
+    within_s: 1
+  - sensor_set: {sensor: accel, values: {x: {type: sine, freq_hz: 5, amplitude: 3.0}}, at_ms: 3000}
+  - expect: 'ALARM: shock'
+    timeout_s: 30

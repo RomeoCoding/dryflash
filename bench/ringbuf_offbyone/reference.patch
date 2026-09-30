@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:00.410862800 +0300
++++ b/main/main.c	2026-09-30 07:27:52.562737300 +0300
+@@ -22,7 +22,7 @@
+ 
+ static int ring_put(ring_t *r, int v)
+ {
+-    if (r->count > CAP) {
++    if (r->count >= CAP) {
+         return -1;
+     }
+     r->buf[r->head] = v;

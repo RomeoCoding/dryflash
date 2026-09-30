@@ -1,0 +1,15 @@
+name: queue keeps eight items in order and rejects the ninth
+emulator: {deterministic: true}
+steps:
+  - expect: 'queue ready'
+    timeout_s: 60
+  - write: "put 1\nput 2\nput 3\nput 4\nput 5\nput 6\nput 7\nput 8\n"
+  - expect: 'put: ok 8'
+  - write: "put 9\n"
+  - expect: 'put: (full|ok 9)'
+  - expect_not: 'put: ok 9'
+    within_s: 0.2
+  - write: "dump\n"
+  - expect: 'queue \(8\): 1 2 3 4 5 6 7 8\r?\n'
+  - write: "get\n"
+  - expect: 'get: 1\r?\n'

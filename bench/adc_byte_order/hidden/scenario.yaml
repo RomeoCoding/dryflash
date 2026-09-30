@@ -1,0 +1,16 @@
+name: voltmeter reads the injected voltage
+emulator: {deterministic: true}
+sensors:
+  - model: ads1115
+    name: adc
+    address: 0x49
+    rate_hz: 100
+    waveform: {ain0: 1.234}
+steps:
+  - expect: 'ain0=([-0-9.]+) V'
+    timeout_s: 60
+    value_range: [1.229, 1.239]
+  - sensor_set: {sensor: adc, values: {ain0: 2.5}, at_ms: 3000}
+  - expect: 'ain0=(2\.\d+) V'
+    timeout_s: 30
+    value_range: [2.495, 2.505]

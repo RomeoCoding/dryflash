@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:17.577261800 +0300
++++ b/main/main.c	2026-09-30 07:27:52.969047000 +0300
+@@ -19,7 +19,7 @@
+     const esp_timer_create_args_t args = {.callback = heartbeat, .name = "heartbeat"};
+     esp_timer_handle_t t;
+     ESP_ERROR_CHECK(esp_timer_create(&args, &t));
+-    ESP_ERROR_CHECK(esp_timer_start_periodic(t, HEARTBEAT_PERIOD_MS));
++    ESP_ERROR_CHECK(esp_timer_start_periodic(t, HEARTBEAT_PERIOD_MS * 1000));
+     printf("heartbeat every %d ms\n", HEARTBEAT_PERIOD_MS);
+     for (int s = 1; s <= 3; s++) {
+         vTaskDelay(pdMS_TO_TICKS(1000));

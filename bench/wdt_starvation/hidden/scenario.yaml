@@ -1,0 +1,8 @@
+name: sequencer completes without watchdog reports
+emulator: {deterministic: true}
+steps:
+  - expect: 'warming up'
+    timeout_s: 60
+  - expect: 'measurement 4: 1068'
+    timeout_s: 60
+  - expect: 'measurement complete'

@@ -1,0 +1,105 @@
+{
+  "generated": "2026-09-30T04:46:03Z",
+  "results": [
+    {
+      "app": "accel_scaling",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 0.25 from 'z=0.25 g' is outside [0.95, 1.05]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 167.4
+    },
+    {
+      "app": "accel_wrong_register",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 90 from 'tilt=90.0 deg' is outside [43, 47]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 167.6
+    },
+    {
+      "app": "adc_byte_order",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value -3.579 from 'ain0=-3.579 V' is outside [1.229, 1.239]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 166.2
+    },
+    {
+      "app": "adc_pga_threshold",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 1.9 from 'battery=1.90 V' is outside [3.75, 3.85]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 162.4
+    },
+    {
+      "app": "freertos_race",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 1000 from 'total=1000 ' is outside [2000, 2000]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 163.9
+    },
+    {
+      "app": "null_config",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "fail_on pattern 'Guru Meditation Error' matched: Guru Meditation Error: Core  0 panic'ed (LoadProhibited). Exception was unhandled.",
+      "shipped_panic": "NULL pointer dereference (read at 0x00000000) in apply_setting (main/main.c:21).",
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 164.2
+    },
+    {
+      "app": "ringbuf_offbyone",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "timeout after 10.0s waiting for 'queue \\\\(8\\\\): 1 2 3 4 5 6 7 8\\\\r?\\\\n'",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 183.1
+    },
+    {
+      "app": "stack_overflow",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "fail_on pattern '\\\\*\\\\*\\\\*ERROR\\\\*\\\\*\\\\* A stack overflow' matched: ***ERROR*** A stack overflow in task worker has been detected.",
+      "shipped_panic": "Stack overflow in task 'worker': raise its stack size in xTaskCreate or cut its stack use (large locals, deep recursion) in vApplicationStackOverflowHook (/opt/esp/idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:577).",
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 180.0
+    },
+    {
+      "app": "timer_units",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 19868 from 'uptime 2 s beats=19868' is outside [19, 21]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 183.9
+    },
+    {
+      "app": "wdt_starvation",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "fail_on pattern 'task_wdt: Task watchdog got triggered' matched: task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:",
+      "shipped_panic": "Task watchdog: IDLE0 (CPU 0) did not run in time; running were [CPU 0: sequencer, CPU 1: IDLE1]. A task is busy-looping without blocking (add vTaskDelay or wait on an event).",
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 71.9
+    }
+  ]
+}

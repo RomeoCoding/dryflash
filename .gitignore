@@ -12,3 +12,6 @@ dist/
 /scratch/
 /results/tmp/
 /qemu-src/
+.uv-cache/
+.venv-client/
+bench/.work/

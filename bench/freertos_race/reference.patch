@@ -1,0 +1,38 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:27:50.913567800 +0300
++++ b/main/main.c	2026-09-30 07:27:52.705837900 +0300
+@@ -2,12 +2,14 @@
+ #include <stdio.h>
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/event_groups.h"
++#include "freertos/semphr.h"
+ #include "freertos/task.h"
+ 
+ #define PACKETS_PER_TASK 1000
+ 
+ static int s_total;
+ static EventGroupHandle_t s_done;
++static SemaphoreHandle_t s_lock;
+ static EventGroupHandle_t s_link_up;
+ 
+ static void log_packet(void)
+@@ -21,9 +23,11 @@
+     int bit = (int)(intptr_t)arg;
+     xEventGroupWaitBits(s_link_up, 1, pdFALSE, pdTRUE, portMAX_DELAY);   /* wait for the link */
+     for (int i = 0; i < PACKETS_PER_TASK; i++) {
++        xSemaphoreTake(s_lock, portMAX_DELAY);
+         int t = s_total;
+         log_packet();
+         s_total = t + 1;
++        xSemaphoreGive(s_lock);
+     }
+     xEventGroupSetBits(s_done, bit);
+     vTaskDelete(NULL);
+@@ -32,6 +36,7 @@
+ void app_main(void)
+ {
+     s_done = xEventGroupCreate();
++    s_lock = xSemaphoreCreateMutex();
+     s_link_up = xEventGroupCreate();
+     printf("counting packets\n");
+     xTaskCreatePinnedToCore(receiver, "rx_a", 3072, (void *)1, 5, NULL, 0);

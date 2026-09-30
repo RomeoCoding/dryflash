@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:56.851119000 +0300
++++ b/main/main.c	2026-09-30 07:27:53.220618300 +0300
+@@ -26,7 +26,7 @@
+     uint8_t b[2];
+     reg = REG_CONV;
+     ESP_ERROR_CHECK(i2c_master_transmit_receive(s_dev, &reg, 1, b, 2, 100));
+-    int16_t code = (int16_t)(b[1] << 8 | b[0]);
++    int16_t code = (int16_t)(b[0] << 8 | b[1]);   /* registers are big-endian */
+     return code * FULL_SCALE_V / 32768.0f;
+ }
+ 

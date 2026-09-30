@@ -1,0 +1,10 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:12:59.338436000 +0300
++++ b/main/main.c	2026-09-30 07:27:52.309842000 +0300
+@@ -54,5 +54,5 @@
+ void app_main(void)
+ {
+     printf("signal statistics starting\n");
+-    xTaskCreate(worker, "worker", 2048, NULL, 5, NULL);
++    xTaskCreate(worker, "worker", 8192, NULL, 5, NULL);
+ }

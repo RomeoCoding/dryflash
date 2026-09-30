@@ -1,0 +1,6 @@
+name: heartbeat runs at 10 Hz
+emulator: {deterministic: true}
+steps:
+  - expect: 'uptime 2 s beats=(\d+)'
+    timeout_s: 90
+    value_range: [19, 21]

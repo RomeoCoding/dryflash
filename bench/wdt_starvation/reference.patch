@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:12:59.795695000 +0300
++++ b/main/main.c	2026-09-30 07:27:52.441198300 +0300
+@@ -21,7 +21,7 @@
+ {
+     printf("warming up sensor front-end (6 s)\n");
+     while (!s_warm) {
+-        /* wait for the warm-up timer */
++        vTaskDelay(pdMS_TO_TICKS(10));   /* block instead of spinning, so IDLE can run */
+     }
+     for (int i = 0; i < 5; i++) {
+         printf("measurement %d: %d\n", i, measure(i));

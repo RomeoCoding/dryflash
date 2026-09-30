@@ -1,0 +1,13 @@
+name: config shell survives a missing value
+emulator: {deterministic: true}
+steps:
+  - expect: 'config shell ready'
+    timeout_s: 60
+  - write: "set name\n"
+  - expect: 'error[^\r\n]*\r?\n'
+  - write: "set name probe7\n"
+  - expect: 'name=probe7\r?\n'
+  - write: "set rate\n"
+  - expect: 'error[^\r\n]*\r?\n'
+  - write: "show\n"
+  - expect: 'config: name=probe7 rate=10\r?\n'

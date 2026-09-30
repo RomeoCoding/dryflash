@@ -1,0 +1,20 @@
+name: tilt meter reports the injected tilt
+emulator: {deterministic: true}
+sensors:
+  - model: adxl345
+    name: accel
+    address: 0x53
+    rate_hz: 200
+    waveform: {x: 0.7071, y: 0.0, z: 0.7071}     # 45 degrees
+steps:
+  - expect: 'tilt=([0-9.]+) deg'
+    timeout_s: 60
+    value_range: [43, 47]
+  - sensor_set: {sensor: accel, values: {x: 0.0, z: 1.0}, at_ms: 3000}   # level
+  - expect: 'tilt=([0-3]\.\d) deg'
+    timeout_s: 30
+    value_range: [0, 2]
+  - sensor_set: {sensor: accel, values: {x: 0.0, y: 1.0, z: 0.0}, at_ms: 5000}   # on its side
+  - expect: 'tilt=(9\d\.\d|8\d\.\d) deg'
+    timeout_s: 30
+    value_range: [88, 92]

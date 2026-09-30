@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:57.260306700 +0300
++++ b/main/main.c	2026-09-30 07:27:53.349446500 +0300
+@@ -11,7 +11,7 @@
+ #define REG_DATA_FORMAT 0x31
+ #define REG_DATAX0      0x32
+ #define SHOCK_G         2.0f
+-#define G_PER_LSB       0.0039f
++#define G_PER_LSB       0.015625f   /* +-8 g, 10-bit: 64 LSB/g */
+ 
+ static i2c_master_dev_handle_t s_dev;
+ 

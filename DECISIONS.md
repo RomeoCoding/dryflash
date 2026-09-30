@@ -104,3 +104,31 @@ One entry per non-obvious call: the decision, the alternative, and why.
   `qemu_guest_getrandom`, which is host entropy otherwise.
 - **Sensor waveforms restart at virtual time 0 after `emu_reset`.** Why: the reset restarts QEMU,
   and its virtual clock starts again from 0; the waveform timeline stays the same.
+
+## M4
+
+- **Facts from the brief corrected:** atomicdog/renode-mcp lists 13 tools, not 12, and shows no
+  "inactive" marker (it has a single commit). The Veecle article (2026-08-13) could not be
+  re-verified, so it is not cited. The ESP-IDF Tools MCP ships inside `idf.py` from IDF 6.0
+  (set_target, build, flash, clean). Wokwi's MCP mode is confirmed as experimental, cloud-based
+  and token-gated.
+- **Hidden tests live next to each app (`bench/<app>/hidden/`), and the harness copies only
+  `app/` and `TASK.md` into the agent's workspace.** Alternative: a separate private repo. Why:
+  everything stays reproducible from one checkout, and the agent still never sees them.
+- **Baseline = file tools plus a `./build.sh` that compiles in Docker, no general shell.** Why: it
+  is the "compile and reason" workflow the MCP server is meant to improve on. A general shell
+  would let the baseline agent run QEMU by hand, which turns the comparison into a test of
+  improvisation.
+- **Harness defaults to `claude-sonnet-5`** (`--model` to change). Why: it is the cost-sensitive
+  choice for a 20-run benchmark; the owner decides whether to spend more.
+- **Agent runs inherit the operator's user-level CLAUDE.md.** `--setting-sources project` and
+  `--disable-slash-commands` strip user settings and skills, but not user memory, and `--bare`
+  needs an API key instead of the owner's login. `--claude-config-dir` allows a clean run; the
+  smoke run did not use it, and bench/README says so.
+- **The demo reuses two benchmark apps** (`null_config` for the crash, `adc_byte_order` for the
+  sensor bug) instead of a demo-only firmware. Why: the story (crash → decode → fix, then a
+  sensor test failing → fix → passing) uses code that is already verified.
+- **`bench/verify.py` wipes the build directory and copies with fresh mtimes.** It found a real
+  hazard: ninja trusts mtimes, and `copytree` preserves them, so a reused path silently tested a
+  stale (already fixed) binary. The harness's per-task baseline build volume is removed for the
+  same reason.

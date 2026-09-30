@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images-and-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Base image (ESP-IDF v6.1 + server), test target with dev dependencies and test firmware.
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: test
+          tags: esp32-sim-mcp:test
+          load: true
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,mode=max,scope=base
+
+      # Patched QEMU (qemu-patches/, GPL-2.0-or-later) on top of the test image. The QEMU build
+      # layer is cached by the patch contents, so it only rebuilds when the patches change.
+      - name: Build sensors test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/qemu-sensors.Dockerfile
+          build-args: BASE_IMAGE=esp32-sim-mcp:test
+          tags: esp32-sim-mcp:test-sensors
+          load: true
+          cache-from: type=gha,scope=qemu
+          cache-to: type=gha,mode=max,scope=qemu
+
+      - name: Unit tests (QEMU-free)
+        run: docker run --rm esp32-sim-mcp:test pytest -q
+
+      - name: Integration tests (stock QEMU)
+        run: docker run --rm esp32-sim-mcp:test pytest -q -m integration
+
+      - name: Sensor injection tests (patched QEMU; includes the vibration_monitor demo run twice)
+        run: docker run --rm esp32-sim-mcp:test-sensors pytest -q -m sensors
+
+      - name: Demo app via the test-run CLI
+        run: >
+          docker run --rm esp32-sim-mcp:test-sensors
+          test-run /opt/esp32-sim-mcp/examples/vibration_monitor scenario.yaml
+
+  runtime-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: base
+          tags: esp32-sim-mcp:latest
+          load: true
+          cache-from: type=gha,scope=base
+      - name: Build sensors runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/qemu-sensors.Dockerfile
+          build-args: BASE_IMAGE=esp32-sim-mcp:latest
+          tags: esp32-sim-mcp-sensors:latest
+          load: true
+          cache-from: type=gha,scope=qemu
+      - name: Smoke test the MCP server over stdio (client on the runner, server in Docker)
+        run: |
+          python3 -m venv /tmp/client && /tmp/client/bin/pip install -q mcp==2.2.0
+          /tmp/client/bin/python scripts/smoke_session.py --docker esp32-sim-mcp:latest

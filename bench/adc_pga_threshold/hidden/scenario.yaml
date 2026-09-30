@@ -1,0 +1,17 @@
+name: battery monitor reports 3.8 V and flags low battery below 3.4 V
+emulator: {deterministic: true}
+sensors:
+  - model: ads1115
+    name: adc
+    address: 0x49
+    rate_hz: 100
+    waveform: {ain1: 1.9}          # 3.8 V battery behind the 2:1 divider
+steps:
+  - expect: 'battery=([0-9.]+) V'
+    timeout_s: 60
+    value_range: [3.75, 3.85]
+  - expect_not: 'LOW BATTERY'
+    within_s: 1
+  - sensor_set: {sensor: adc, values: {ain1: 1.6}, at_ms: 3000}   # 3.2 V
+  - expect: 'LOW BATTERY'
+    timeout_s: 30

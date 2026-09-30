@@ -1,0 +1,12 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 07:13:57.645713700 +0300
++++ b/main/main.c	2026-09-30 07:27:53.483962300 +0300
+@@ -11,7 +11,7 @@
+ #define REG_CONFIG    0x01
+ /* OS=1, MUX=101 (AIN1-GND), PGA=001 (+-4.096 V), single-shot, 128 SPS */
+ #define CONFIG_AIN1   0xD383
+-#define ADC_FULLSCALE 2.048f
++#define ADC_FULLSCALE 4.096f
+ #define DIVIDER       2.0f
+ #define LOW_BATTERY_V 3.4f
+ 
