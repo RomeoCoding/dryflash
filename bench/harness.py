@@ -85,6 +85,8 @@ def make_workspace(task: str, config: str, root: Path) -> Path:
         subprocess.run(["docker", "volume", "rm", "-f", vol], capture_output=True)
         (ws / "build.sh").write_text(
             "#!/usr/bin/env bash\n# Compile this project with ESP-IDF v6.1 in Docker (no emulator available).\n"
+            # Git Bash would otherwise rewrite the ":/work" volume argument into a Windows path.
+            "export MSYS_NO_PATHCONV=1\n"
             f'exec docker run --rm -v "{docker_path(ws)}:/work" -v {vol}:/build {BASE_IMAGE} '
             "idf.py -C /work -B /build/b build 2>&1 | tail -40\n", newline="\n")
     return ws
@@ -101,7 +103,8 @@ def agent_command(config: str, ws: Path, model: str, max_turns: int) -> list[str
         cfg.write_text(json.dumps(mcp, indent=2))
         cmd += ["--mcp-config", str(cfg), "--allowedTools", "Read,Edit,Write,Glob,Grep,mcp__dryflash"]
     else:
-        cmd += ["--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(./build.sh),Bash(bash build.sh)"]
+        cmd += ["--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(./build.sh),Bash(bash build.sh),"
+                                    "Bash(./build.sh:*),Bash(bash build.sh:*)"]
     return cmd
 
 

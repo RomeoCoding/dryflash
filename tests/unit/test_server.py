@@ -21,6 +21,16 @@ async def test_all_tools_are_listed_with_model_oriented_descriptions():
         assert t.description and len(t.description) > 60, name
 
 
+async def test_emu_start_documents_every_sensor_model():
+    # A benchmark agent read only this description, took the generic model for a register-less stub
+    # and gave up on emulating a NAU7802. Every model and the generic model's fields must be here.
+    async with Client(create_server()) as c:
+        desc = next(t for t in (await c.list_tools()).tools if t.name == "emu_start").description
+    for word in ("adxl345", "ads1115", "generic", "registers", "channels", "stride", "read_only", "read_set",
+                 "int24_be", "scale", "bias"):
+        assert word in desc, word
+
+
 async def test_unknown_session_is_a_readable_tool_error():
     async with Client(create_server()) as c:
         r = await c.call_tool("uart_read", {"session_id": "s99"})

@@ -113,6 +113,16 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         session and keeps the crash at the end of the UART log; reboot=true boot-loops like a board.
         sensors (esp32, sensors image only) declares injected I2C sensors, e.g.
         [{"model": "adxl345", "name": "accel", "address": 83, "waveform": {...}}]; see sensor_set.
+        Common keys: model, name, address, bus (0/1), rate_hz (new samples per virtual second),
+        waveform {channel: spec}. Models: adxl345 (channels x/y/z in g; follows DATA_FORMAT),
+        ads1115 (ain0..ain3 in V; follows MUX and PGA), and generic, which emulates any
+        register-mapped chip from a description: registers {offset: byte or [bytes]} (power-on
+        contents), channels {name: {offset, format, scale, bias}} with format (u)int8 or
+        (u)int16/24/32_be/_le and raw = value*scale + bias, stride (bytes per register address,
+        e.g. 2 for 16-bit registers), read_only "0x00-0x1c,0x30" (guest writes ignored) and
+        read_set "0x00:0x28" (bits always read as 1, e.g. data-ready flags). Example, a 24-bit
+        ADC: {"model": "generic", "name": "adc", "address": 42, "read_set": "0x00:0x28",
+        "channels": {"kg": {"offset": 18, "format": "int24_be", "scale": 10000}}}.
         Next: uart_expect for a boot message, or uart_read with cursor 0.
         """
         t = get_target(target)

@@ -163,3 +163,13 @@ One entry per non-obvious call: the decision, the alternative, and why.
 - **`verify.py` merges into `verify.json`** instead of overwriting it, so verifying a subset of
   apps keeps the record of the rest (unit-tested in tests/unit/test_bench.py, which also checks
   every task's layout and that every hidden scenario and sensor spec parses).
+- **The `emu_start` description documents every sensor model and the `generic` fields.** Why:
+  in run hard-a an agent read only the tool description, took `generic` for a register-less
+  stub and did not emulate the NAU7802. Tool descriptions are the only documentation an agent
+  is guaranteed to read; the README is not.
+- **Baseline `build.sh` exports `MSYS_NO_PATHCONV=1`, and `Bash(./build.sh:*)` is allowed.** Why:
+  in run hard-a two baseline agents could not compile (Git Bash path mangling; a call form the
+  allow-list did not match).
+- **hard-a is reported as a null result with its confounds** rather than repeated to "get a
+  difference". All ten runs passed. The confounds (baseline compile failures, one MCP run that
+  never emulated) are listed next to the numbers in bench/README.md.

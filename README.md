@@ -263,8 +263,11 @@ with `bench/<app>/reference.patch` (results in `bench/results/verify.json`).
 
 `bench/harness.py` runs Claude Code headless (`claude -p`) on each task with this server, and
 without it (compile-only). It records success on the hidden test, wall time, turns, tokens and
-cost. Only a 2 tasks × 2 configurations smoke run has been done; see
-[bench/README.md](bench/README.md) for its results, the full-run command and a cost estimate.
+cost. Two runs have been done: a 2 × 2 smoke run on the first set, and one attempt per
+configuration on each of the five second-set tasks. All 14 runs passed, with and without the
+server, so the benchmark does not yet show the server making a difference. See
+[bench/README.md](bench/README.md) for the results, the problems the runs exposed, the commands
+and cost estimates.
 With N this small, no difference between the configurations can be called significant, and no
 such claim is made.
 

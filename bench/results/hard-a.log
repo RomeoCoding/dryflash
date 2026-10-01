@@ -1,0 +1,22 @@
+== humidity_logger / mcp
+   hidden test PASS, 157.7 s, turns=19, API-equivalent cost=$0.3824742
+== humidity_logger / baseline
+   hidden test PASS, 164.0 s, turns=27, API-equivalent cost=$0.4337959999999999
+== scale_display / mcp
+   hidden test PASS, 140.1 s, turns=16, API-equivalent cost=$0.271172
+== scale_display / baseline
+   hidden test PASS, 265.4 s, turns=25, API-equivalent cost=$0.5363006
+== vibration_telemetry / mcp
+   hidden test PASS, 239.5 s, turns=27, API-equivalent cost=$0.4694016
+== vibration_telemetry / baseline
+   hidden test PASS, 304.5 s, turns=31, API-equivalent cost=$0.5222544
+== pressure_alarm / mcp
+   hidden test PASS, 368.5 s, turns=43, API-equivalent cost=$0.8767124
+== pressure_alarm / baseline
+   hidden test PASS, 296.9 s, turns=25, API-equivalent cost=$0.6201606000000001
+== tank_gauge / mcp
+   hidden test PASS, 233.9 s, turns=28, API-equivalent cost=$0.4646683999999999
+== tank_gauge / baseline
+   hidden test PASS, 206.4 s, turns=35, API-equivalent cost=$0.517386
+report: C:\Users\Romeo Mattar\Projects\esp32-sim-mcp\bench\results\hard-a.md
+harness exit 0

@@ -31,6 +31,24 @@ def test_agent_env_never_carries_an_api_key():
     assert harness.agent_env({"PATH": "/bin"}, "/cfg")["CLAUDE_CONFIG_DIR"] == "/cfg"
 
 
+def test_baseline_build_script_survives_git_bash(tmp_path, monkeypatch):
+    # Under Git Bash (MSYS) "C:\...:/work" in a docker -v argument is rewritten unless path
+    # conversion is off; a baseline agent lost its compiler to this in run hard-a.
+    harness = _load("harness")
+    monkeypatch.setattr(harness, "HERE", BENCH)
+    monkeypatch.setattr(harness.subprocess, "run", lambda *a, **k: None)
+    ws = harness.make_workspace("null_config", "baseline", tmp_path)
+    script = (ws / "build.sh").read_text()
+    assert "export MSYS_NO_PATHCONV=1" in script
+    assert script.index("export MSYS_NO_PATHCONV=1") < script.index("docker run")
+
+
+def test_baseline_may_run_build_sh_with_arguments():
+    cmd = _load("harness").agent_command("baseline", Path("/ws"), "m", 10)
+    tools = cmd[cmd.index("--allowedTools") + 1]
+    assert "Bash(./build.sh:*)" in tools and "Bash(bash build.sh:*)" in tools
+
+
 @pytest.mark.parametrize("agent,stderr,expected", [
     ({"is_error": True, "result": "Claude AI usage limit reached|1759300000"}, "", True),
     ({"is_error": True, "result": "5-hour limit reached ∙ resets 3pm"}, "", True),

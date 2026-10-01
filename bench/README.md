@@ -158,12 +158,56 @@ smallest set worth reporting per task, cost about **$10–18**. `--max-turns 60`
 40) leaves room for the observe-and-iterate loop. Both configurations get the same limit, but a
 run that hits the limit counts as a failure, so report how many runs did.
 
-Run `hard-a` (one attempt each, on the owner's subscription) was started on 2026-10-01; its
-results go to `results/hard-a.*`.
+### Second-set run `hard-a` (2026-10-01)
+
+`results/hard-a.json`, `.md`, `.log`: model `claude-sonnet-5`, `--max-turns 60`, 5 tasks ×
+2 configurations, **one attempt each, N = 10 runs**, run on the owner's subscription.
+
+| task | config | hidden test | wall (s) | turns | output tokens | API-equivalent cost (USD) |
+|---|---|---|---|---|---|---|
+| humidity_logger | mcp | pass | 158 | 19 | 5,759 | 0.38 |
+| humidity_logger | baseline | pass | 164 | 27 | 13,976 | 0.43 |
+| scale_display | mcp | pass | 140 | 16 | 8,199 | 0.27 |
+| scale_display | baseline | pass | 265 | 25 | 19,209 | 0.54 |
+| vibration_telemetry | mcp | pass | 240 | 27 | 13,028 | 0.47 |
+| vibration_telemetry | baseline | pass | 305 | 31 | 17,106 | 0.52 |
+| pressure_alarm | mcp | pass | 369 | 43 | 26,808 | 0.88 |
+| pressure_alarm | baseline | pass | 297 | 25 | 25,946 | 0.62 |
+| tank_gauge | mcp | pass | 234 | 28 | 11,555 | 0.46 |
+| tank_gauge | baseline | pass | 206 | 35 | 12,357 | 0.52 |
+
+**All ten runs fixed their bug.** In the nine runs whose summary states the root cause (the
+`pressure_alarm` baseline summary was cut off before stating one), it is the planted bug. So the
+second set does not separate the configurations either: without the emulator, the agent found
+every bug by reading the code. The turn and token differences go both ways (MCP used fewer turns
+on four tasks and more on `pressure_alarm`). At N = 1 per cell they are anecdotes.
+
+The run also exposed three problems, which weaken even this null result:
+
+- **The baseline sometimes could not compile.** In `humidity_logger` the generated `build.sh`
+  failed under Git Bash: MSYS rewrote the `-v "<path>:/work"` argument. In `pressure_alarm`
+  the agent called the script in a form the allow-list did not match, so the call needed an
+  approval that a headless run cannot give. Both runs still passed. Fixed afterwards: `build.sh`
+  exports `MSYS_NO_PATHCONV=1`, and `Bash(./build.sh:*)` is allowed.
+- **One MCP run never used the emulator.** In `scale_display` the agent decided that the
+  `generic` model was "a register-less stub" and fixed the bug by reading the code. The
+  `emu_start` description listed only an ADXL345 example; the `generic` model's fields were
+  documented only in the top-level README, which the agent never sees. Fixed afterwards: the
+  description now documents every model and the `generic` fields, with an example (the sensors
+  image was rebuilt).
+- **The harness does not record which tools an agent called.** Apart from `tank_gauge` (whose
+  summary quotes emulator output) and `scale_display` (which says it did not emulate), I can't
+  tell how far the MCP runs relied on observation.
+
+A repeat (`--run-id hard-b`) would measure the fixed setup, but given that every baseline run
+passed, it is unlikely to show a difference on these tasks. Separating the configurations needs
+tasks where the cause really is not visible in the source: for example a bug in a binary-only
+library, a peripheral misbehaviour that the code handles correctly on paper, or a timing
+interaction across several tasks.
 
 ## How to read the numbers
 
-N is tiny: 15 tasks (2 run so far), one attempt each, one model. Differences between the
+N is tiny: 15 tasks (7 run so far), one attempt each, one model. Differences between the
 configurations at this N are anecdotes, not evidence; nothing here is claimed to be statistically significant. To make a
 claim, repeat the run several times (tasks × configurations × attempts) and report per-task
 success rates with confidence intervals. The tasks are also written by the author of the tool
