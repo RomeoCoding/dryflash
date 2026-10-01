@@ -10,7 +10,7 @@ A config shell reboots when an operator types `set name` with no value.
 ```json
 {
   "ok": true,
-  "duration_s": 68.5,
+  "duration_s": 74.7,
   "sizes": {
     "app_bin_bytes": 143456,
     "app_partition_bytes": 1048576,
@@ -37,7 +37,7 @@ A config shell reboots when an operator types `set name` with no value.
     }
   }
 }
-```  (69.2s)
+```  (75.2s)
 
 **agent → `emu_start`** `{"project_dir": "/tmp/dryflash-demo/null_config"}`
 ```json
@@ -54,13 +54,13 @@ A config shell reboots when an operator types `set name` with no value.
   "matched": true,
   "match": "config shell ready"
 }
-```  (2.0s)
+```  (1.6s)
 
 **agent → `uart_write`** `{"session_id": "s1", "text": "set name"}`
 ```json
 {
   "bytes_written": 9,
-  "uart_cursor_before_write": 2988
+  "uart_cursor_before_write": 2983
 }
 ```  (0.0s)
 
@@ -117,7 +117,7 @@ A config shell reboots when an operator types `set name` with no value.
     }
   ]
 }
-```  (0.1s)
+```  (0.0s)
 
 **agent → `emu_stop`** `{"session_id": "s1"}`
 ```json
@@ -145,7 +145,7 @@ A config shell reboots when an operator types `set name` with no value.
       "match": "config shell ready",
       "groups": [],
       "passed": true,
-      "elapsed_s": 8.82
+      "elapsed_s": 5.72
     },
     {
       "index": 1,
@@ -210,7 +210,7 @@ A config shell reboots when an operator types `set name` with no value.
       "action": "expect",
       "name": null,
  
-```  (14.1s)
+```  (9.3s)
 
 ## 2. A sensor bug no crash dump can show
 
@@ -223,7 +223,7 @@ A voltmeter reads an ADS1115 ADC over I2C. The test injects 1.234 V on AIN0, the
   "failed_step": 0,
   "reason": "value -3.579 from 'ain0=-3.579 V' is outside [1.229, 1.239]"
 }
-```  (73.3s)
+```  (73.8s)
 
 *agent edits the source:*
 ```diff
@@ -247,7 +247,7 @@ A voltmeter reads an ADS1115 ADC over I2C. The test injects 1.234 V on AIN0, the
       ],
       "value": 1.234,
       "passed": true,
-      "elapsed_s": 7.17
+      "elapsed_s": 5.11
     },
     {
       "index": 1,
@@ -275,11 +275,11 @@ A voltmeter reads an ADS1115 ADC over I2C. The test injects 1.234 V on AIN0, the
       ],
       "value": 2.5,
       "passed": true,
-      "elapsed_s": 0.41
+      "elapsed_s": 0.33
     }
   ],
-  "duration_s": 7.57
+  "duration_s": 5.44
 }
-```  (12.6s)
+```  (9.5s)
 
 Both bugs were found and fixed without a board: the crash from its decoded backtrace, the sensor bug from injected, deterministic ADC data.

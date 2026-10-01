@@ -15,3 +15,6 @@ dist/
 .uv-cache/
 .venv-client/
 bench/.work/
+
+# per-run demo subtitle cues (run_demo.py --narration)
+demo/cues.srt

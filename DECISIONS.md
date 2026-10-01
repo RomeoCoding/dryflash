@@ -173,3 +173,17 @@ One entry per non-obvious call: the decision, the alternative, and why.
 - **hard-a is reported as a null result with its confounds** rather than repeated to "get a
   difference". All ten runs passed. The confounds (baseline compile failures, one MCP run that
   never emulated) are listed next to the numbers in bench/README.md.
+
+## Demo recording prep
+
+- **Presentation is separate from the session.** `run_demo.py` keeps the same tool calls,
+  arguments, order and reference patches, and writes the same markdown to `transcript.md`. The
+  terminal view (banners, spinner, typing, condensed results, captions) is a `Presenter` that
+  only formats; the transcript keeps the full results. Why: the brief asked for a recording-friendly
+  demo "without changing what it proves".
+- **Narration is held for its reading time (150 words per minute), and subtitles come from the
+  real run.** Why: a voiceover recorded at that pace stays in sync without editing, and the
+  `.srt` carries the actual cue times (clipped to the next cue, split into two-line blocks of at
+  most 42 characters).
+- **`--warm-up` shows a cached rebuild in `project_build`.** The short `duration_s` it reports is
+  true for a cached build; demo/README.md says so. The committed transcript comes from a cold run.
