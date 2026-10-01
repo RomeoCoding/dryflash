@@ -161,7 +161,7 @@ class Presenter:
         return "\n".join([self._c("36", rule), self._c("1;36", "  " + title), self._c("36", rule)])
 
     def render_json(self, obj) -> str:
-        s = json.dumps(obj, indent=2)
+        s = json.dumps(obj, indent=2, ensure_ascii=False)
         if not self.color:
             return s
         s = re.sub(r'^(\s*)"([^"]+)":', lambda m: f'{m[1]}{self._c("36", chr(34) + m[2] + chr(34))}:', s,
@@ -228,7 +228,7 @@ class Presenter:
 
     def diff(self, lines: list[str]) -> None:
         self.print()
-        self.print(self._c("1", "✎ agent edits the source:"))
+        self.print(self._c("1", "± agent edits the source:"))
         for line in lines:
             self.print("  " + self._c("32" if line.startswith("+") else "31", line))
 

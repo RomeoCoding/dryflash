@@ -73,6 +73,11 @@ def test_plain_rendering_has_no_escape_codes(demo):
     assert "\x1b" not in p.banner("1. A crash, decoded")
 
 
+def test_screen_json_keeps_unicode_readable(demo):
+    p = demo.Presenter(pace=0.0, color=False)
+    assert "✓ write" in p.render_json({"steps": ["✓ write"]})
+
+
 def test_colour_marks_pass_and_fail(demo):
     p = demo.Presenter(pace=0.0, color=True)
     assert "\x1b[32m" in p.render_json({"passed": True})   # green

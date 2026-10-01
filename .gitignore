@@ -18,3 +18,7 @@ bench/.work/
 
 # per-run demo subtitle cues (run_demo.py --narration)
 demo/cues.srt
+
+# film renders and Blender sources (large binaries; publish separately)
+demo/film/*.mp4
+demo/film/*.blend
