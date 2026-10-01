@@ -80,6 +80,14 @@ After each run the hidden scenario is executed with the sensors image's `test-ru
 harness records success, wall time, turns, input/output/cache tokens and the cost reported by
 Claude Code, in `results/<run_id>.json` and `results/<run_id>.md`.
 
+**Billing.** The agent runs use the `claude` CLI's login. The harness removes
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the agent's environment, so with a Pro or Max
+login the runs draw on plan usage and nothing is billed per token. The "cost" figures are
+Claude Code's API-price estimate (`total_cost_usd`). They are kept as a size measure that can be
+compared across configurations, not as money spent. A run cut off by a usage or rate limit (or
+API overload) is recorded as **incomplete**, not failed, is left out of the pass counts, and stops
+the harness. Rerun with the same `--run-id` and `--resume` after the limit resets.
+
 Prerequisites: Docker with both images built (see the top-level README), the `claude` CLI on PATH
 and logged in, Python 3.10+.
 
@@ -121,6 +129,10 @@ not repeated.
 
 ## Cost estimates
 
+All dollar figures below are API-equivalent (see **Billing**). On a subscription login, the real
+cost is plan usage. A full set of runs can reach a Pro plan's 5-hour limit, so spread repeated
+attempts over several windows.
+
 From the smoke run: $0.19–0.24 per run (mean $0.21) and about 2–2.5 minutes of wall time,
 plus a cold ESP-IDF build on the first run of each container.
 
@@ -131,7 +143,7 @@ plus a cold ESP-IDF build on the first run of each container.
   about $20–50 and 4–6 hours.**
 - A more capable model (`--model`) costs proportionally more per token.
 
-### Second set only (not run)
+### Second set only
 
 ```sh
 python bench/harness.py --run-id hard-a --max-turns 60 \
@@ -146,7 +158,8 @@ smallest set worth reporting per task, cost about **$10–18**. `--max-turns 60`
 40) leaves room for the observe-and-iterate loop. Both configurations get the same limit, but a
 run that hits the limit counts as a failure, so report how many runs did.
 
-The owner decides whether to spend this; nothing beyond the smoke run has been executed.
+Run `hard-a` (one attempt each, on the owner's subscription) was started on 2026-10-01; its
+results go to `results/hard-a.*`.
 
 ## How to read the numbers
 

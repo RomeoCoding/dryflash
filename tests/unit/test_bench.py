@@ -12,11 +12,36 @@ BENCH = Path(__file__).resolve().parents[2] / "bench"
 TASKS = sorted(p.name for p in BENCH.iterdir() if (p / "app" / "CMakeLists.txt").exists())
 
 
-def _verify_module():
-    spec = importlib.util.spec_from_file_location("bench_verify", BENCH / "verify.py")
+def _load(name):
+    spec = importlib.util.spec_from_file_location(f"bench_{name}", BENCH / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _verify_module():
+    return _load("verify")
+
+
+def test_agent_env_never_carries_an_api_key():
+    # Agent runs must bill the operator's subscription login, never an API key that happens to be set.
+    harness = _load("harness")
+    env = harness.agent_env({"PATH": "/bin", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t"}, None)
+    assert env == {"PATH": "/bin"}
+    assert harness.agent_env({"PATH": "/bin"}, "/cfg")["CLAUDE_CONFIG_DIR"] == "/cfg"
+
+
+@pytest.mark.parametrize("agent,stderr,expected", [
+    ({"is_error": True, "result": "Claude AI usage limit reached|1759300000"}, "", True),
+    ({"is_error": True, "result": "5-hour limit reached ∙ resets 3pm"}, "", True),
+    ({}, "API Error: 429 rate_limit_error", True),
+    ({}, "API Error: 529 Overloaded", True),
+    # a finished run that merely talks about rates is not a limit
+    ({"is_error": False, "result": "fixed the rate limit check in the alarm"}, "", False),
+    ({"is_error": True, "result": "Reached max turns (60)"}, "", False),
+])
+def test_cut_off_detection(agent, stderr, expected):
+    assert _load("harness").cut_off(agent, stderr) is expected
 
 
 def test_there_are_tasks():

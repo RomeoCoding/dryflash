@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,27 @@ PROMPT_BASELINE = (
     " There is no hardware and no emulator. You can compile the firmware with ./build.sh to check "
     "that it builds."
 )
+
+
+# Errors that end an agent run for reasons outside the task: plan usage limits, API rate limits and
+# overload. Such a run says nothing about the configuration, so it is recorded as incomplete.
+_CUT_OFF = re.compile(r"usage limit|limit reached|rate[_ ]limit|\b429\b|\b529\b|overloaded", re.I)
+
+
+def agent_env(base: dict, config_dir: str | None) -> dict:
+    """The agent's environment without API credentials, so runs use the operator's `claude` login
+    (a subscription) and never bill an API key that happens to be set in the shell."""
+    env = {k: v for k, v in base.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    return env
+
+
+def cut_off(agent: dict, stderr: str) -> bool:
+    """True if the run ended on a usage/rate limit or overload rather than on its own."""
+    if agent and not agent.get("is_error"):
+        return False
+    return bool(_CUT_OFF.search(f"{agent.get('result') or ''}\n{stderr or ''}"))
 
 
 def docker_path(p: Path) -> str:
@@ -100,9 +122,7 @@ def run_one(task: str, config: str, args, root: Path) -> dict:
     ws = make_workspace(task, config, root)
     t0 = time.monotonic()
     try:
-        env = dict(os.environ)
-        if args.claude_config_dir:
-            env["CLAUDE_CONFIG_DIR"] = args.claude_config_dir
+        env = agent_env(dict(os.environ), args.claude_config_dir)
         p = subprocess.run(agent_command(config, ws, args.model, args.max_turns), cwd=ws, capture_output=True,
                            text=True, timeout=args.timeout, encoding="utf-8", errors="replace", env=env)
         out, err, code = p.stdout, p.stderr, p.returncode
@@ -114,9 +134,10 @@ def run_one(task: str, config: str, args, root: Path) -> dict:
     except ValueError:
         agent = {}
     usage = agent.get("usage") or {}
-    test = hidden_test(task, ws)
+    incomplete = cut_off(agent, err)
+    test = {"passed": None, "reason": "not tested: agent run cut off"} if incomplete else hidden_test(task, ws)
     return {
-        "task": task, "config": config, "model": args.model,
+        "task": task, "config": config, "model": args.model, "incomplete": incomplete,
         "success": test["passed"], "hidden_test_reason": test["reason"],
         "wall_s": round(wall, 1), "agent_exit": code, "agent_error": agent.get("is_error"),
         "num_turns": agent.get("num_turns"), "cost_usd": agent.get("total_cost_usd"),
@@ -135,17 +156,23 @@ def write_report(run_id: str, results: list[dict], args) -> Path:
     lines = [f"# Benchmark run {run_id}", "", f"Model: `{args.model}`. N = {len(results)} runs "
              f"({len({r['task'] for r in results})} tasks x {len({r['config'] for r in results})} configurations, "
              "1 attempt each). N is far too small for any significance claim.", "",
-             "| task | config | hidden test | wall (s) | turns | output tokens | cost (USD) |",
+             "Cost is Claude Code's API-price estimate (`total_cost_usd`); on a subscription login the "
+             "runs use plan usage instead. Incomplete runs (cut off by a usage/rate limit) are excluded "
+             "from the pass counts.", "",
+             "| task | config | hidden test | wall (s) | turns | output tokens | API-equivalent cost (USD) |",
              "|---|---|---|---|---|---|---|"]
     for r in results:
-        lines.append(f"| {r['task']} | {r['config']} | {'pass' if r['success'] else 'fail'} | {r['wall_s']} | "
+        verdict = "incomplete" if r.get("incomplete") else "pass" if r["success"] else "fail"
+        lines.append(f"| {r['task']} | {r['config']} | {verdict} | {r['wall_s']} | "
                      f"{r['num_turns']} | {r['output_tokens']} | {r['cost_usd']} |")
     for cfg in sorted({r["config"] for r in results}):
-        rs = [r for r in results if r["config"] == cfg]
+        rs = [r for r in results if r["config"] == cfg and not r.get("incomplete")]
+        if not rs:
+            continue
         cost = sum(r["cost_usd"] or 0 for r in rs)
         lines.append("")
-        lines.append(f"- **{cfg}**: {sum(r['success'] for r in rs)}/{len(rs)} passed the hidden test, "
-                     f"total cost ${cost:.2f}, mean wall time {sum(r['wall_s'] for r in rs) / len(rs):.0f} s")
+        lines.append(f"- **{cfg}**: {sum(bool(r['success']) for r in rs)}/{len(rs)} passed the hidden test, "
+                     f"API-equivalent cost ${cost:.2f}, mean wall time {sum(r['wall_s'] for r in rs) / len(rs):.0f} s")
     md = out / f"{run_id}.md"
     md.write_text("\n".join(lines) + "\n")
     return md
@@ -174,7 +201,7 @@ def main() -> int:
     results = []
     prev = HERE / "results" / f"{args.run_id}.json"
     if args.resume and prev.exists():
-        results = json.loads(prev.read_text())["results"]
+        results = [r for r in json.loads(prev.read_text())["results"] if not r.get("incomplete")]
     done = {(r["task"], r["config"]) for r in results}
     for task in args.tasks:
         for cfg in args.configs:
@@ -182,10 +209,14 @@ def main() -> int:
                 continue
             print(f"== {task} / {cfg}", flush=True)
             r = run_one(task, cfg, args, root)
-            print(f"   hidden test {'PASS' if r['success'] else 'FAIL'}, {r['wall_s']} s, turns={r['num_turns']}, "
-                  f"cost=${r['cost_usd']}", flush=True)
             results.append(r)
             write_report(args.run_id, results, args)
+            if r["incomplete"]:
+                print(f"   cut off ({r['summary'][:200]!r}); stopping. After the limit resets, rerun with "
+                      f"--run-id {args.run_id} --resume", flush=True)
+                return 3
+            print(f"   hidden test {'PASS' if r['success'] else 'FAIL'}, {r['wall_s']} s, turns={r['num_turns']}, "
+                  f"API-equivalent cost=${r['cost_usd']}", flush=True)
     print(f"report: {write_report(args.run_id, results, args)}")
     return 0
 
