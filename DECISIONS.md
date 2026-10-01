@@ -187,3 +187,12 @@ One entry per non-obvious call: the decision, the alternative, and why.
   most 42 characters).
 - **`--warm-up` shows a cached rebuild in `project_build`.** The short `duration_s` it reports is
   true for a cached build; demo/README.md says so. The committed transcript comes from a cold run.
+
+## Upstream PR prep
+
+- **Recommend sending 0005 alone first.** On esp-develop head it has a reproducible A/B (3 distinct
+  logs in 30 runs → 30/30 identical at shift=5) and accounts for the whole measured effect. 0006 is
+  generic QEMU core code without a standalone reproducer on stock esp-develop; it waits for one
+  (or goes with an explicit caveat), and may belong on qemu-devel.
+- **Claims without a committed log were dropped from the PR text** ("8 runs, 2 distinct logs at
+  shift=3"). Today's shift=3 runs were 20/20 identical unpatched, so the draft overstated it.

@@ -13,7 +13,11 @@ noted; the workaround is listed instead.
 2. **`-icount shift=5,sleep=off` isn't deterministic on the esp32 machine.** Across 10 runs
    of the same image there were 2 distinct UART logs, differing by 1 ms in one boot-log
    timestamp (`experiments/m1/logs/q4b_n10.log`). shift=1 to 3 were deterministic, and every
-   ESP32 device model uses only `QEMU_CLOCK_VIRTUAL`. Not root-caused. Workaround: use shift≤3.
+   ESP32 device model uses only `QEMU_CLOCK_VIRTUAL`. **Root cause confirmed 2026-10-01: item 5.**
+   On the esp-develop head (`febae182e1`), the unpatched build gave 3 distinct logs in 30 runs at
+   shift=5, while 0005 alone gave 20/20 identical, the same hash as 0005+0006
+   (`experiments/upstream/ab_determinism.sh`, docs/upstream-pr.md). The shift≤3 workaround is
+   no longer needed with the patched QEMU.
 3. **`esp32_i2c.c` runs a whole command list in zero virtual time** and never raises
    ARBITRATION or TIME_OUT. It's fine for master-side sensor reads, but it hides timing bugs.
    Not patched.
@@ -31,7 +35,7 @@ noted; the workaround is listed instead.
    host-dependent moment while the APP CPU may already be running. Two runs of the same image
    showed APP CPU cycle counts 277 cycles apart (found by diffing `-d int` traces). *Patched* by
    `qemu-patches/0005-*` (the reset is queued on the APP CPU with `async_run_on_cpu()`). This is
-   probably also the cause of item 2 (shift=5).
+   also the cause of item 2 (shift=5), confirmed by an A/B on esp-develop head.
 6. **QEMU core: the icount warp advances the clock while a VM stop is pending.** Between a stop
    request and the main loop handling it, the run state is still RUNNING and the vCPUs look idle,
    so `icount_start_warp_timer()` jumped the clock to the next timer deadline (8.87 ms).
