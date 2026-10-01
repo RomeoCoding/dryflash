@@ -1,0 +1,16 @@
+diff -ruN a/main/main.c b/main/main.c
+--- a/main/main.c	2026-09-30 18:54:22.155324100 +0300
++++ b/main/main.c	2026-09-30 18:54:29.732647400 +0300
+@@ -10,7 +10,11 @@
+ #include "ads1115.h"
+ #include "rate.h"
+ 
+-#define SAMPLE_PERIOD_MS 15  /* 66.7 Hz */
++/* Must be a whole number of RTOS ticks (10 ms at the default 100 Hz): pdMS_TO_TICKS(15) truncates
++ * to one tick, so the loop ran every 10 ms while the slope assumed 15 ms, and every rate read
++ * 2/3 of the true value. */
++#define SAMPLE_PERIOD_MS 20  /* 50 Hz */
++_Static_assert(SAMPLE_PERIOD_MS % portTICK_PERIOD_MS == 0, "sample period must be a whole number of ticks");
+ #define STATUS_PERIOD_MS 500
+ #define RISE_ALARM_BAR_S 5.0f
+ #define RISE_CLEAR_BAR_S 1.0f

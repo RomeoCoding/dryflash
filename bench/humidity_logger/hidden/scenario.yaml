@@ -1,0 +1,33 @@
+# The shipped firmware keeps the record time stamp in 16 bits: from 65.536 s of uptime on, every
+# record looks 65 s old and the publisher reports "sensor fault" once a second.
+# HDC1080 registers: temperature at byte 0 (raw = (T + 40) * 65536 / 165), humidity at byte 2
+# (raw = RH * 65536 / 100), both big-endian; 16-bit registers, so stride 2.
+name: humidity logger keeps publishing fresh readings past the first minute
+emulator: {deterministic: true}
+timeout_s: 900
+fail_on:
+  - 'Guru Meditation Error'
+  - 'abort\(\) was called'
+  - '\*\*\*ERROR\*\*\* A stack overflow'
+  - 'assert failed:'
+  - 'task_wdt: Task watchdog got triggered'
+  - 'CORRUPT HEAP'
+  - 'sensor fault'
+sensors:
+  - model: generic
+    name: hdc1080
+    address: 0x40
+    stride: 2
+    rate_hz: 10
+    channels:
+      temp: {offset: 0, format: uint16_be, scale: 397.187879, bias: 15887.515}
+      rh: {offset: 2, format: uint16_be, scale: 655.36}
+    waveform: {temp: 21.5, rh: 45.0}
+steps:
+  - expect: 't=3 s rh=([0-9.]+) %'
+    timeout_s: 90
+    value_range: [44.9, 45.1]
+  - sensor_set: {sensor: hdc1080, values: {rh: 62.0}, at_ms: 80000}
+  - expect: 't=9[0-9] s rh=([0-9.]+) %'
+    timeout_s: 600
+    value_range: [61.9, 62.1]

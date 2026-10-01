@@ -1,0 +1,46 @@
+# A 20 kg sack dropped on the platform: the load cell overshoots to 31 kg for 30 ms and rings down
+# to 20 kg within 0.2 s. The shipped glitch filter takes the overshoot as its candidate, never
+# re-arms, and holds the display at 0 kg while the sack stays on. A 20 ms knock afterwards must
+# still be filtered out.
+# NAU7802 model: PU_CTRL (0x00) always reads PUR|CR set; ADCO at 0x12..0x14, 24-bit big-endian;
+# 10000 counts per kg plus a dead-load offset that the power-up tare removes.
+name: scale shows a dropped load and still ignores knocks
+emulator: {deterministic: true}
+sensors:
+  - model: generic
+    name: scale
+    address: 0x2a
+    rate_hz: 80
+    read_set: "0x00:0x28"
+    channels:
+      kg: {offset: 0x12, format: int24_be, scale: 10000, bias: 84213}
+    waveform:
+      kg: {type: noise, std: 0.002, seed: 3}
+steps:
+  - expect: 'scale ready'
+    timeout_s: 60
+  - expect: 'weight=(-?[0-9.]+) kg'
+    timeout_s: 30
+    value_range: [-0.02, 0.02]
+  - sensor_set:
+      sensor: scale
+      at_ms: 4000
+      values:
+        kg:
+          - {type: step, steps: [[0, 31.0], [0.03, 14.0], [0.06, 23.5], [0.09, 18.5], [0.12, 20.6], [0.15, 19.8], [0.2, 20.0]]}
+          - {type: noise, std: 0.002, seed: 4}
+  - expect: 'weight=(19\.9\d|20\.0\d) kg'
+    timeout_s: 30
+  - sensor_set:
+      sensor: scale
+      at_ms: 7000
+      values:
+        kg:
+          - {type: step, steps: [[0, 45.0], [0.02, 20.0]]}
+          - {type: noise, std: 0.002, seed: 5}
+  - run_for_ms: 4000 # the previous step matched at ~4.3 s of virtual time: this runs past 8 s
+  - expect_not: 'weight=(2[1-9]|[3-9]\d)\.\d\d kg'
+    within_s: 0.5
+  - expect: 'weight=(-?[0-9.]+) kg'
+    timeout_s: 30
+    value_range: [19.97, 20.03]

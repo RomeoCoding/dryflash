@@ -1,0 +1,32 @@
+# Replays the refill recording that ships with the app (data/refill_2026-09-12.csv: 6000 L +
+# 50 L/s for 150 s, 3 mm slosh). lut_interp() keeps (y1 - y0) * frac in 16 bits: in segments that
+# rise by more than 256 L the product wraps and the content drops by 256..1024 L.
+# Expected volumes come from the tank geometry (horizontal cylinder, R = 1000 mm, L = 6000 mm) at
+# the firmware's 1 s level average, with the firmware clock ~0.25 s behind virtual time; the
+# reference fix lands within 32 L of them over the whole refill, so +-60 L is the tolerance.
+name: tank gauge follows a refill
+emulator: {deterministic: true}
+timeout_s: 900
+sensors:
+  - model: ads1115
+    name: level
+    address: 0x49
+    rate_hz: 860
+    waveform:
+      ain0: {type: csv, path: data/refill_2026-09-12.csv, column: volts}
+steps:
+  - expect: 't=20 s level=\d+ mm vol=(\d+) L'
+    timeout_s: 120
+    value_range: [6922, 7042]
+  - expect: 't=66 s level=\d+ mm vol=(\d+) L'
+    timeout_s: 240
+    value_range: [9233, 9353]
+  - expect: 't=114 s level=\d+ mm vol=(\d+) L'
+    timeout_s: 240
+    value_range: [11622, 11742]
+  - expect: 't=140 s level=\d+ mm vol=(\d+) L'
+    timeout_s: 240
+    value_range: [12922, 13042]
+  - expect: 't=175 s level=\d+ mm vol=(\d+) L'
+    timeout_s: 240
+    value_range: [13440, 13560]

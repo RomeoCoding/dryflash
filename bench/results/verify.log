@@ -8,4 +8,9 @@ OK   stack_overflow         shipped=fail fixed=pass  (180.0s)  fail_on pattern '
 OK   ringbuf_offbyone       shipped=fail fixed=pass  (183.1s)  timeout after 10.0s waiting for 'queue \\(8\\): 1 2 3 4 5 6 7 8\\r?\\n'
 OK   timer_units            shipped=fail fixed=pass  (183.9s)  value 19868 from 'uptime 2 s beats=19868' is outside [19, 21]
 OK   wdt_starvation         shipped=fail fixed=pass  (71.9s)  fail_on pattern 'task_wdt: Task watchdog got triggered' matched: task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog i
-10/10 hidden tests discriminate
+OK   humidity_logger        shipped=fail fixed=pass  (114.4s)  fail_on pattern 'sensor fault' matched: sensor fault: no fresh data
+OK   tank_gauge             shipped=fail fixed=pass  (175.7s)  value 5967 from 't=20 s level=796 mm vol=5967 L' is outside [6922, 7042]
+OK   vibration_telemetry    shipped=fail fixed=pass  (103.4s)  fail_on pattern 'Guru Meditation Error' matched: Guru Meditation Error: Core  0 panic'ed (LoadStorePIFAddrError). Exception was unhandled.
+OK   scale_display          shipped=fail fixed=pass  (157.7s)  timeout after 30.0s waiting for 'weight=(19\\.9\\d|20\\.0\\d) kg'
+OK   pressure_alarm         shipped=fail fixed=pass  (147.8s)  timeout after 60.0s waiting for 'ALARM: rapid pressure rise \\(([-0-9.]+) bar/s\\)'
+15/15 hidden tests discriminate (10 apps verified 2026-09-30, 5 new apps 2026-10-01)

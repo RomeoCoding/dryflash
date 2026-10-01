@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-30T04:46:03Z",
+  "generated": "2026-10-01T06:03:21Z",
   "results": [
     {
       "app": "accel_scaling",
@@ -52,6 +52,16 @@
       "duration_s": 163.9
     },
     {
+      "app": "humidity_logger",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "fail_on pattern 'sensor fault' matched: sensor fault: no fresh data",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 114.4
+    },
+    {
       "app": "null_config",
       "ok": true,
       "shipped_passed": false,
@@ -60,6 +70,16 @@
       "fixed_passed": true,
       "fixed_reason": null,
       "duration_s": 164.2
+    },
+    {
+      "app": "pressure_alarm",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "timeout after 60.0s waiting for 'ALARM: rapid pressure rise \\\\(([-0-9.]+) bar/s\\\\)'",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 147.8
     },
     {
       "app": "ringbuf_offbyone",
@@ -72,6 +92,16 @@
       "duration_s": 183.1
     },
     {
+      "app": "scale_display",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "timeout after 30.0s waiting for 'weight=(19\\\\.9\\\\d|20\\\\.0\\\\d) kg'",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 157.7
+    },
+    {
       "app": "stack_overflow",
       "ok": true,
       "shipped_passed": false,
@@ -82,6 +112,16 @@
       "duration_s": 180.0
     },
     {
+      "app": "tank_gauge",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "value 5967 from 't=20 s level=796 mm vol=5967 L' is outside [6922, 7042]",
+      "shipped_panic": null,
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 175.7
+    },
+    {
       "app": "timer_units",
       "ok": true,
       "shipped_passed": false,
@@ -90,6 +130,16 @@
       "fixed_passed": true,
       "fixed_reason": null,
       "duration_s": 183.9
+    },
+    {
+      "app": "vibration_telemetry",
+      "ok": true,
+      "shipped_passed": false,
+      "shipped_reason": "fail_on pattern 'Guru Meditation Error' matched: Guru Meditation Error: Core  0 panic'ed (LoadStorePIFAddrError). Exception was unhandled.",
+      "shipped_panic": "CPU exception 'LoadStorePIFAddrError' in calib_apply (main/calib.c:34).",
+      "fixed_passed": true,
+      "fixed_reason": null,
+      "duration_s": 103.4
     },
     {
       "app": "wdt_starvation",

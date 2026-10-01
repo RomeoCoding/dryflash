@@ -246,13 +246,17 @@ toolchain.
 
 ## Benchmark
 
-`bench/` holds 10 small ESP-IDF apps, each with one planted bug, a bug report (`TASK.md`) and a
+`bench/` holds 15 small ESP-IDF apps, each with one planted bug, a bug report (`TASK.md`) and a
 hidden acceptance scenario:
 
 - **General bugs:** stack overflow, watchdog starvation, ring-buffer off-by-one, FreeRTOS race,
   NULL dereference on bad input, timer unit error.
 - **Four that need sensor injection to detect:** wrong register, wrong byte order, two
   unit/scaling errors.
+- **Five multi-file apps where the symptom does not point at the faulty line:** a 16-bit time
+  stamp that wraps after 65 s, a glitch filter that latches on one waveform shape, an `snprintf`
+  overflow that crashes in a different module, a sample period truncated by the RTOS tick, and a
+  16-bit overflow exercised by a recorded CSV refill.
 
 `bench/verify.py` proves every hidden test discriminates: it fails on the shipped app and passes
 with `bench/<app>/reference.patch` (results in `bench/results/verify.json`).

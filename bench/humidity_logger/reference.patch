@@ -1,0 +1,12 @@
+diff -ruN a/main/log.h b/main/log.h
+--- a/main/log.h	2026-09-30 18:42:54.191902700 +0300
++++ b/main/log.h	2026-09-30 18:43:13.526055100 +0300
+@@ -5,7 +5,7 @@
+ #include <stdint.h>
+ 
+ typedef struct __attribute__((packed)) {
+-    uint16_t stamp_ms;
++    uint32_t stamp_ms; /* full uptime: 16 bits wrap after 65.5 s */
+     uint16_t rh_x100;  /* 0.01 %RH */
+     int16_t temp_x100; /* 0.01 degC */
+ } log_rec_t;

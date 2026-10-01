@@ -1,0 +1,18 @@
+diff -ruN a/main/filter.c b/main/filter.c
+--- a/main/filter.c	2026-09-30 18:42:54.581770800 +0300
++++ b/main/filter.c	2026-09-30 18:43:12.224084100 +0300
+@@ -25,10 +25,12 @@
+         s_accepted = kg;
+         return kg;
+     }
+-    if (s_confirm == 0) {
++    if (s_confirm == 0 || fabsf(kg - s_candidate) > GLITCH_KG) {
++        /* first jump, or the readings moved on (ringing after a drop): confirm the new value */
+         s_candidate = kg;
++        s_confirm = 0;
+     }
+-    if (fabsf(kg - s_candidate) <= GLITCH_KG && ++s_confirm >= CONFIRM_N) {
++    if (++s_confirm >= CONFIRM_N) {
+         s_confirm = 0;
+         s_accepted = kg;
+     }

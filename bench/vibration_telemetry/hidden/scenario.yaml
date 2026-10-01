@@ -1,0 +1,28 @@
+# Strong vibration (13 g peak on every axis) makes all six min/max fields and the RMS two-digit:
+# the frame outgrows its 64-byte buffer, the checksum snprintf() then writes past it into the
+# calibration pointer that follows in .bss, and the sampler task faults in calib_apply().
+name: vibration logger survives strong vibration and sends complete frames
+emulator: {deterministic: true}
+sensors:
+  - model: adxl345
+    name: accel
+    address: 0x53
+    rate_hz: 400
+    waveform: {z: 1.0}
+steps:
+  - expect: 'vibration logger, unit 1042'
+    timeout_s: 60
+  - expect: 'tx T00002 x[-+]0\.\d{3}/[-+]0\.\d{3} y[-+]0\.\d{3}/[-+]0\.\d{3} z\+[01]\.\d{3}/\+[01]\.\d{3} r[01]\.\d{3}\*[0-9A-F]{2}\r?\n'
+    timeout_s: 30
+  - sensor_set:
+      sensor: accel
+      at_ms: 4000
+      values:
+        x: {type: sine, freq_hz: 23, amplitude: 13.0}
+        y: {type: sine, freq_hz: 29, amplitude: 13.0}
+        z: [1.0, {type: sine, freq_hz: 17, amplitude: 13.0}]
+  - expect: 'tx T\d{5} x-1\d\.\d{3}/\+1\d\.\d{3} y-1\d\.\d{3}/\+1\d\.\d{3} z-1\d\.\d{3}/\+1\d\.\d{3} r1\d\.\d{3}\*[0-9A-F]{2}\r?\n'
+    timeout_s: 30
+  - run_for_ms: 3000
+  - expect: 'tx T\d{5} x-1\d\.\d{3}/\+1\d\.\d{3} y-1\d\.\d{3}/\+1\d\.\d{3} z-1\d\.\d{3}/\+1\d\.\d{3} r1\d\.\d{3}\*[0-9A-F]{2}\r?\n'
+    timeout_s: 30

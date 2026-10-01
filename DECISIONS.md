@@ -141,3 +141,25 @@ One entry per non-obvious call: the decision, the alternative, and why.
   (`dryflash`, `dryflash-mcp`), no GitHub repository, no Glama, mcp.so or PulseMCP entry. The
   folder keeps its working name, as the brief asked; earlier entries in this file use the old
   name.
+
+## Post-release: harder benchmark tasks
+
+- **Five new tasks, named after the product rather than the bug** (`humidity_logger`,
+  `scale_display`, `vibration_telemetry`, `pressure_alarm`, `tank_gauge`). Why: the harness names
+  each workspace `<task>-<config>`, so names like `adc_byte_order` hand the agent the answer.
+  The first ten keep their names so that the smoke run stays comparable; bench/README.md says so.
+- **The CSV recording lives in `app/data/`, so the agent sees it.** Why: CSV paths resolve
+  against the project directory (the agent's workspace), and a customer attaching a field log is
+  realistic. The hidden test replays the same file; its limits come from the tank geometry,
+  computed independently of the firmware.
+- **The crash task relies on .bss layout** (`s_cal` directly after `s_frame`). Checked with
+  `nm`: the variables are adjacent in link order (telemetry.c before calib.c in SRCS). A
+  toolchain or link-order change could move the victim; `verify.py` would then show the shipped
+  app not crashing, which is why it is rerun after any ESP-IDF bump.
+- **Timing in hidden tests uses printed virtual-time stamps or `run_for_ms`, never `within_s`
+  for "nothing happened before T".** Why: `within_s` is wall time and the emulator runs between
+  2× slower and ~5× faster than real time depending on load (an idle app ran 68 virtual s in
+  15 s).
+- **`verify.py` merges into `verify.json`** instead of overwriting it, so verifying a subset of
+  apps keeps the record of the rest (unit-tested in tests/unit/test_bench.py, which also checks
+  every task's layout and that every hidden scenario and sensor spec parses).

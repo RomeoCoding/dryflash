@@ -3,7 +3,8 @@ and PASS once bench/<app>/reference.patch is applied.
 
 Runs inside the sensors image (four apps need sensor injection):
   docker run --rm -v <repo>:/work dryflash-sensors python /work/bench/verify.py [app ...]
-Writes bench/results/verify.json and exits non-zero if any app does not discriminate.
+Merges into bench/results/verify.json (apps not named keep their entries) and exits non-zero if
+any app does not discriminate.
 """
 
 from __future__ import annotations
@@ -60,6 +61,14 @@ async def verify(name: str, work_root: Path) -> dict:
     }
 
 
+def merge_results(old: dict | None, new: list[dict], generated: str) -> dict:
+    """Results of the apps just verified replace their earlier entries; the others are kept, so
+    verifying a subset does not erase the record of the rest."""
+    by_app = {r["app"]: r for r in (old or {}).get("results", [])}
+    by_app.update({r["app"]: r for r in new})
+    return {"generated": generated, "results": [by_app[a] for a in sorted(by_app)]}
+
+
 async def main(selected: list[str], jobs: int) -> int:
     work_root = Path("/tmp/dryflash/bench-verify")
     sem = asyncio.Semaphore(jobs)
@@ -76,8 +85,9 @@ async def main(selected: list[str], jobs: int) -> int:
     results = await asyncio.gather(*(one(n) for n in selected))
     out = HERE / "results" / "verify.json"
     out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps({"generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                               "results": results}, indent=2))
+    old = json.loads(out.read_text()) if out.exists() else None
+    out.write_text(json.dumps(merge_results(old, results, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                              indent=2))
     bad = [r["app"] for r in results if not r["ok"]]
     print(f"{len(results) - len(bad)}/{len(results)} hidden tests discriminate" + (f"; failing: {bad}" if bad else ""))
     return 1 if bad else 0

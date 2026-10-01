@@ -1,0 +1,15 @@
+diff -ruN a/main/telemetry.c b/main/telemetry.c
+--- a/main/telemetry.c	2026-09-30 18:48:22.291245200 +0300
++++ b/main/telemetry.c	2026-09-30 18:48:28.401593900 +0300
+@@ -1,7 +1,10 @@
+ #include "telemetry.h"
+ #include <stdio.h>
+ 
+-#define FRAME_LEN 64
++/* Worst case: "T" + 10-digit seq, 3 x " a-16.000/+16.000", " r27.713", "*XX", NUL = 74. With
++ * 64 bytes, snprintf() returned more than it wrote, off ran past the end and the checksum was
++ * written behind the buffer (over the calibration pointer). */
++#define FRAME_LEN 80
+ 
+ static char s_frame[FRAME_LEN];
+ 

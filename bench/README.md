@@ -1,8 +1,10 @@
 # Benchmark: do agents fix embedded bugs better when they can run the firmware?
 
-Ten small ESP-IDF apps, each with **one planted bug**, a bug report written from the user's side
-(`TASK.md`: symptoms and required behaviour, no hint at the cause) and a **hidden acceptance
+Fifteen small ESP-IDF apps, each with **one planted bug**, a bug report written from the user's
+side (`TASK.md`: symptoms and required behaviour, no hint at the cause) and a **hidden acceptance
 scenario** (`hidden/scenario.yaml`) the agent never sees.
+
+### First set (10 apps, single file each)
 
 | app | bug class | needs sensor injection to observe |
 |---|---|---|
@@ -17,6 +19,28 @@ scenario** (`hidden/scenario.yaml`) the agent never sees.
 | `accel_scaling` | ADXL345 ±8 g converted with the full-resolution scale | yes |
 | `adc_pga_threshold` | ADS1115 volts computed with the wrong PGA full scale | yes |
 
+The first set's directory names describe the bug, and the harness names each workspace after
+its task (`<task>-<config>`), so the agent sees the hint in its working directory. The second set
+uses product names.
+
+### Second set (5 apps): the symptom does not point at the faulty line
+
+The smoke run below showed that the first set's bugs can be found by reading the code once the
+symptom is described. These apps are written so that observing the running firmware should
+matter. Each has 3–5 source files, and the symptom shows up in a different part of the code
+from the bug.
+
+| app | what the user sees | planted bug | why reading alone is harder |
+|---|---|---|---|
+| `humidity_logger` (HDC1080, generic model) | `sensor fault: no fresh data` about a minute after power-up | the log record keeps the ms time stamp in 16 bits, so it wraps at 65.536 s | appears only after 65 s of virtual time; the fault text points at the sensor and the driver has its own fault path |
+| `scale_display` (NAU7802, generic model) | display stays at the old weight after a sack is put on; bench tests with weights pass | the glitch filter fixes its confirmation candidate on the first out-of-band reading and never re-arms, so a dropped load (overshoot, ringing) latches it | appears only with one waveform shape (a fast step that rings); a gentle step works |
+| `vibration_telemetry` (ADXL345) | `LoadStorePIFAddrError` in `calib_apply()` on the most strongly vibrating machine | `off += snprintf()` runs past the 64-byte frame when all six min/max fields and the RMS are two-digit; the checksum is then written over the calibration pointer that follows in .bss | the backtrace is in calibration code, two modules and one task away from the overflow; data-dependent (needs ≥ 10 g on every axis) |
+| `pressure_alarm` (ADS1115) | the 5 bar/s rise alarm does not trip at 6.5 bar/s | `pdMS_TO_TICKS(15)` is one 10 ms tick, but the slope assumes dt = 15 ms, so every rate reads 2/3 of the truth | a sample-rate/scheduler interaction: the code reads correctly unless you know the tick rate (100 Hz by default) and the truncation |
+| `tank_gauge` (ADS1115, CSV) | the volume drops back by hundreds of litres during refills; a field recording ships with the app | `lut_interp()` keeps `(y1 - y0) * frac` in 16 bits, which wraps in the steep middle segments of the strapping table | data-dependent: only segments that rise by more than 256 L, and only part of each one; the hidden test replays `data/refill_2026-09-12.csv` |
+
+`humidity_logger` and `scale_display` use the `generic` register-map model, so an agent must
+describe the chip itself (stride, `read_set`, channel formats) from the firmware and `TASK.md`.
+
 ## Hidden tests discriminate
 
 `verify.py` runs every hidden scenario twice: on the app as shipped (it must fail) and with
@@ -24,11 +48,23 @@ scenario** (`hidden/scenario.yaml`) the agent never sees.
 
 ```sh
 docker run --rm -v "$(pwd)":/opt/dryflash -w /opt/dryflash dryflash-sensors \
-    /opt/venv/bin/python bench/verify.py            # writes bench/results/verify.json
+    /opt/venv/bin/python bench/verify.py [app ...]  # merges into bench/results/verify.json
 ```
 
-Result: see `results/verify.json` and `results/verify.log` (10/10 discriminate, with each shipped
-app's failure reason).
+Result: see `results/verify.json` and `results/verify.log` (**15/15 discriminate**, with each
+shipped app's failure reason; the second set was verified on 2026-10-01).
+
+For two second-set tasks I also checked that the hidden test rejects a plausible wrong fix (run
+by hand, not part of `verify.py`):
+
+- `scale_display` with the glitch filter deleted: fails (`weight=23.12 kg` appears while the
+  knock and ring-down must stay off the display).
+- `pressure_alarm` with the threshold lowered to 3.3 bar/s, which hides the 2/3 error: fails
+  (the alarm reports 3.44 bar/s, outside the required 5–7).
+
+The `tank_gauge` limits come from the tank geometry, not from the reference firmware's output.
+The fixed firmware is within 32 L of the geometry over the whole refill, the tolerance is
+±60 L, and the shipped error at the checked times is 512–1024 L.
 
 ## Harness
 
@@ -83,28 +119,49 @@ configurations saw the same context, but it is not a clean-room setup. The first
 interrupted by the host running low on memory and resumed with `--resume`; the completed run was
 not repeated.
 
-## Cost estimate for the full run
+## Cost estimates
 
 From the smoke run: $0.19–0.24 per run (mean $0.21) and about 2–2.5 minutes of wall time,
 plus a cold ESP-IDF build on the first run of each container.
 
-- **One attempt per task and configuration (20 runs): about $4–5 and 50–60 minutes** at
+- **First set, one attempt per task and configuration (20 runs): about $4–5 and 50–60 minutes** at
   smoke-run rates. The remaining tasks include harder ones (the race, the watchdog, the scaling
   bugs), which will take more turns; budget **up to ~$10** for safety.
 - **Five attempts each (100 runs), the minimum for a per-task success rate worth reporting:
   about $20–50 and 4–6 hours.**
 - A more capable model (`--model`) costs proportionally more per token.
 
+### Second set only (not run)
+
+```sh
+python bench/harness.py --run-id hard-a --max-turns 60 \
+    --tasks humidity_logger scale_display vibration_telemetry pressure_alarm tank_gauge
+```
+
+5 tasks × 2 configurations = 10 runs. At the smoke-run rate ($0.21 per run) that is about $2,
+but these tasks are bigger and need more turns: an MCP agent will typically build, run several
+scenarios and inspect, and each emulator run takes 0.5–3 minutes. Budget **$3–6 and 40–80
+minutes** for one attempt each. Three attempts (`--run-id hard-b`, `hard-c`), which is the
+smallest set worth reporting per task, cost about **$10–18**. `--max-turns 60` (the default is
+40) leaves room for the observe-and-iterate loop. Both configurations get the same limit, but a
+run that hits the limit counts as a failure, so report how many runs did.
+
 The owner decides whether to spend this; nothing beyond the smoke run has been executed.
 
 ## How to read the numbers
 
-N is tiny: 10 tasks, one attempt each, one model. Differences between the configurations at this
-N are anecdotes, not evidence; nothing here is claimed to be statistically significant. To make a
+N is tiny: 15 tasks (2 run so far), one attempt each, one model. Differences between the
+configurations at this N are anecdotes, not evidence; nothing here is claimed to be statistically significant. To make a
 claim, repeat the run several times (tasks × configurations × attempts) and report per-task
 success rates with confidence intervals. The tasks are also written by the author of the tool
 being measured, which biases them towards what the tool can observe. The four sensor tasks were
 meant to need observation, but the smoke run shows that at least `adc_byte_order` falls to careful
 code reading once the symptom is described. "Needs sensor injection to observe" means the bug
-shows only with sensor data present, not that it cannot be found without it. Harder, less
-self-describing tasks would be needed to separate the two configurations.
+shows only with sensor data present, not that it cannot be found without it. The second set
+tries to separate the two configurations, but it does not guarantee it. Every planted bug there
+is still visible in the source to a careful reader (a 16-bit field, a missing re-arm, an
+`snprintf` return value, a truncating tick conversion, a 16-bit product), and a strong model may
+find it without running anything. I also designed these tasks knowing what the tool can observe
+(time stamps, virtual time, injected waveforms, panic registers), which biases them in the
+tool's favour. Treat a gap on this set as "observation helped on tasks built for it", not as a
+general result.

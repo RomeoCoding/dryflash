@@ -1,0 +1,27 @@
+# pdMS_TO_TICKS(15) is 1 tick at the default 100 Hz tick rate, so the loop samples every 10 ms
+# while the slope is computed with dt = 15 ms: every rate reads 2/3 of the truth.
+# Transmitter: bar = (V - 0.5) * 2.5. Rest at 2 bar (1.3 V). From 3 s a slow swing, 5 +- 3 bar at
+# 0.2 Hz (peak slope 3.77 bar/s: no alarm); from 8 s a fast one at 0.35 Hz (peak 6.60 bar/s:
+# alarm). Both start at their minimum, so the pressure never steps.
+name: rapid-rise alarm trips at 5 bar/s and not below
+emulator: {deterministic: true}
+sensors:
+  - model: ads1115
+    name: adc
+    address: 0x49
+    rate_hz: 860
+    waveform: {ain0: 1.3}
+steps:
+  - expect: 'pressure monitor started'
+    timeout_s: 60
+  - expect: 't=2\.[05] s p=([-0-9.]+) bar'
+    timeout_s: 30
+    value_range: [1.98, 2.02]
+  - sensor_set: {sensor: adc, at_ms: 3000, values: {ain0: {type: sine, freq_hz: 0.2, amplitude: 1.2, offset: 2.5, phase_deg: -90}}}
+  - sensor_set: {sensor: adc, at_ms: 8000, values: {ain0: {type: sine, freq_hz: 0.35, amplitude: 1.2, offset: 2.5, phase_deg: -90}}}
+  - expect: 't=7\.5 s p=[-0-9.]+ bar rate=[-0-9.]+ bar/s alarms=(\d+)'
+    timeout_s: 60
+    value_range: [0, 0]
+  - expect: 'ALARM: rapid pressure rise \(([-0-9.]+) bar/s\)'
+    timeout_s: 60
+    value_range: [5.0, 7.0]

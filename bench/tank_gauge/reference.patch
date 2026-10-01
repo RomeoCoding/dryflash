@@ -1,0 +1,13 @@
+diff -ruN a/main/lut.c b/main/lut.c
+--- a/main/lut.c	2026-09-30 19:00:05.812017100 +0300
++++ b/main/lut.c	2026-09-30 19:00:07.883183400 +0300
+@@ -14,6 +14,8 @@
+     }
+     const lut_point_t *a = &t[i - 1], *b = &t[i];
+     uint16_t frac = ((x - a->x) << 8) / (b->x - a->x); /* position inside the segment, Q8 */
+-    uint16_t step = (b->y - a->y) * frac;
++    /* The product needs 32 bits: a 1200 L segment times frac 255 is 306,000. In 16 bits it wrapped
++     * and the content fell back by multiples of 256 L inside the steep middle segments. */
++    uint32_t step = (uint32_t)(b->y - a->y) * frac;
+     return a->y + (step >> 8);
+ }
