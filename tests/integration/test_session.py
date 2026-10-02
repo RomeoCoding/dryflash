@@ -101,6 +101,21 @@ async def test_gdb_break_at_app_main_and_backtrace(mgr, hello_build):
     assert stop["frame"]["function"] == "app_main"
 
 
+async def test_uart_expect_reports_a_breakpoint_halt_instead_of_timing_out(mgr, hello_build):
+    # "Hello" is printed right after app_main: while stopped there it cannot arrive, and the old
+    # behaviour was a silent timeout. After resuming it must arrive at once.
+    s = await mgr.start(cfg(hello_build, HELLO, wait_for_gdb=True))
+    dbg = await s.debugger()
+    await dbg.break_insert("app_main")
+    assert (await dbg.continue_(timeout=60))["reason"] == "breakpoint-hit"
+    t0 = asyncio.get_running_loop().time()
+    r = await s.uart_expect("Hello from dryflash!", timeout=20)
+    assert asyncio.get_running_loop().time() - t0 < 5
+    assert not r["matched"] and r["reason"].startswith("halted") and "app_main" in r["reason"], r
+    await s.resume()
+    assert (await s.uart_expect("Hello from dryflash!", timeout=30))["matched"]
+
+
 async def test_pause_continue_and_reset(mgr, hello_build):
     s = await mgr.start(cfg(hello_build, HELLO))
     assert (await s.uart_expect("tick 1", timeout=30))["matched"]

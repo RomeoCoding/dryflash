@@ -31,6 +31,12 @@ async def test_emu_start_documents_every_sensor_model():
         assert word in desc, word
 
 
+async def test_uart_expect_documents_the_halted_answer():
+    async with Client(create_server()) as c:
+        desc = next(t for t in (await c.list_tools()).tools if t.name == "uart_expect").description
+    assert "halted" in desc and "gdb_continue" in desc
+
+
 async def test_unknown_session_is_a_readable_tool_error():
     async with Client(create_server()) as c:
         r = await c.call_tool("uart_read", {"session_id": "s99"})

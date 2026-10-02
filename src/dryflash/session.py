@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .gdbmi import Debugger
+from .gdbmi import Debugger, _frame
 from .procutil import PortAllocator, die_with_parent
 from .qemu_cmd import DEFAULT_ICOUNT_SHIFT, QemuOptions, build_qemu_cmdline
 from .qmp import QmpClient
@@ -27,6 +27,7 @@ EFUSE_CACHE = Path(tempfile.gettempdir()) / "dryflash" / "efuse"
 # Wall-clock seconds per virtual second measured in M1 (docs/M1_REPORT.md, question 4); used only
 # when the emulator cannot stop at an exact virtual time.
 _WALL_PER_VIRTUAL = {3: 1.6, 2: 2.9}
+_HALT_GRACE_S = 1.0  # how long uart_expect tolerates a halted CPU before reporting it
 
 
 class SessionError(RuntimeError):
@@ -320,7 +321,9 @@ class Session:
         'value=(\\d+)' cannot match a line that is still arriving ("value=1" of "value=12")."""
         rx = re.compile(pattern.encode())
         start = self.uart.start if cursor is None else cursor
-        deadline = asyncio.get_running_loop().time() + timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        halted_since: float | None = None
         async with self._uart_cond:
             while True:
                 m = self.uart.search(rx, start, self.uart.last_line_end() if complete_lines else None)
@@ -337,19 +340,52 @@ class Session:
                         "context_after": self.uart.slice(m.end_offset,
                                                          m.end_offset + 200).decode(errors="replace"),
                     }
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0 or self._exited.is_set():
+                now = loop.time()
+                remaining = deadline - now
+                # A halted CPU prints nothing, so waiting out the timeout only hides why. The grace
+                # period lets a resume that races with this call (emu_continue just before) win.
+                halt = self.halt_reason()
+                halted_since = (halted_since or now) if halt else None
+                halted_too_long = halt is not None and now - halted_since >= _HALT_GRACE_S
+                if remaining <= 0 or self._exited.is_set() or halted_too_long:
+                    if self._exited.is_set():
+                        reason = f"session {self.state}: {self.exit_reason}"
+                    elif halted_too_long:
+                        reason = halt
+                    else:
+                        reason = "timeout"
                     return {
                         "matched": False,
-                        "reason": "timeout" if remaining <= 0 else f"session {self.state}: {self.exit_reason}",
+                        "reason": reason,
                         "cursor": self.uart.total,
                         "tail": self.uart.slice(max(start, self.uart.total - 1500),
                                                 self.uart.total).decode(errors="replace"),
                     }
                 try:
-                    await asyncio.wait_for(self._uart_cond.wait(), remaining)
+                    # wake up periodically even without output, to notice a halt
+                    await asyncio.wait_for(self._uart_cond.wait(), min(remaining, 0.25))
                 except asyncio.TimeoutError:
                     pass
+
+    def halt_reason(self) -> str | None:
+        """Why the CPU cannot produce output right now (paused or stopped in the debugger), or None."""
+        if self._exited.is_set():
+            return None
+        if self.gdb is not None and self.gdb.state == "stopped":
+            stop = self.gdb.last_stop or {}
+            f = _frame(stop.get("frame"), getattr(self.gdb, "source_root", None)) or {}
+            where = ""
+            if f.get("function"):
+                where = f" in {f['function']}"
+                if f.get("file") and f.get("line"):
+                    where += f" ({f['file']}:{f['line']})"
+            why = stop.get("reason") or "stopped"
+            return (f"halted: the CPU is stopped in the debugger ({why}{where}), so no UART output can "
+                    "arrive; resume it with gdb_continue or emu_continue, then call uart_expect again")
+        if self.state == "paused":
+            return ("halted: the session is paused, so no UART output can arrive; resume it with "
+                    "emu_continue, then call uart_expect again")
+        return None
 
     # ----- debugger --------------------------------------------------------------------------
     async def debugger(self) -> Debugger:

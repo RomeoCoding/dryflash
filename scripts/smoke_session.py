@@ -67,7 +67,7 @@ async def main(args) -> None:
             funcs = [f["function"] for f in bt["frames"]]
             assert funcs[0] == "app_main" and "main_task" in funcs, funcs
             await call(c, "emu_continue", session_id=sid)
-            m = await call(c, "uart_expect", session_id=sid, pattern=r"Hello from dryflash!", timeout_s=90)
+            m = await call(c, "uart_expect", session_id=sid, pattern=r"Hello from dryflash!", timeout_s=30)
             assert m["matched"], m
         finally:
             await call(c, "emu_stop", session_id=sid)

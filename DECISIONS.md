@@ -196,3 +196,20 @@ One entry per non-obvious call: the decision, the alternative, and why.
   (or goes with an explicit caveat), and may belong on qemu-devel.
 - **Claims without a committed log were dropped from the PR text** ("8 runs, 2 distinct logs at
   shift=3"). Today's shift=3 runs were 20/20 identical unpatched, so the draft overstated it.
+
+## Robustness (item 4)
+
+- **The "GDB continue → uart_expect timed out under load" failure was not reproduced.** 53 runs of
+  the exact tool sequence (`scripts/stress_gdb_resume.py`): 5 idle, 24 with 3 parallel sessions
+  and 16 CPU burners, 24 with 4 parallel sessions under a 700 MB memory cap. All passed, and the
+  slowest `uart_expect` took 0.03 s. "Hello" is the first statement after the breakpoint, so the
+  old 30 s timeout cannot have been a slow-board problem: the CPU was halted. Raising the smoke
+  timeout to 90 s only hid that.
+- **`uart_expect` now reports a halted CPU instead of timing out.** If the session is paused, or
+  GDB has the CPU stopped, for more than 1 s (the grace period lets a racing resume win), it returns
+  matched=false with a reason naming the stop location and how to resume. Any recurrence of the
+  original failure now explains itself, and agents that call `uart_expect` at a breakpoint get an
+  answer in about a second instead of after the full timeout. The smoke timeout is back to 30 s.
+- **README quick-start built the wrong image.** `docker build -f docker/Dockerfile -t dryflash .`
+  builds the last stage (`test`, CMD pytest); the runtime image needs `--target base`. CI already
+  used the right target.

@@ -246,7 +246,9 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         call to only match new output. By default only complete lines are searched, so
         'value=(\\d+)' never matches a half-received line; set complete_lines=false to match a
         prompt that has no trailing newline. On timeout returns matched=false with the last
-        output; if the session exited, the reason says so (then decode_panic).
+        output; if the session exited, the reason says so (then decode_panic). If the CPU is
+        halted (paused, or stopped at a breakpoint), it returns after ~1 s with matched=false and
+        reason "halted: ..." naming where it stopped: resume with gdb_continue or emu_continue.
         """
         re.compile(pattern)
         return await mgr.get(session_id).uart_expect(pattern, timeout=min(timeout_s, 600), cursor=cursor,

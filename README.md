@@ -33,7 +33,7 @@ You need Docker (Docker Desktop on Windows/macOS; on Windows it needs WSL2). Bui
 from a clone of this repository:
 
 ```sh
-docker build -f docker/Dockerfile -t dryflash .                           # ~13 GB on disk (ESP-IDF v6.1, all targets)
+docker build -f docker/Dockerfile --target base -t dryflash .             # ~13 GB on disk (ESP-IDF v6.1, all targets)
 docker build -f docker/qemu-sensors.Dockerfile \
              --build-arg BASE_IMAGE=dryflash -t dryflash-sensors .    # + patched QEMU, ~4 min
 ```
