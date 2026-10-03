@@ -154,11 +154,13 @@ The sensors image adds a small patch series to Espressif's QEMU (`qemu-patches/`
   "write a pointer, then read or write with auto-increment" protocol. Its contents come from the
   host over a chardev: the host sends `(virtual_ns, bank, register, bytes)` updates, and a
   `QEMU_CLOCK_VIRTUAL` timer applies each one at its timestamp. The device never waits for the
-  host. Four generic mechanisms cover real chips without chip-specific C:
+  host. A few generic mechanisms cover real chips without chip-specific C:
   - a register **stride** (16-bit registers);
-  - one **bank selector** (a register field, e.g. the ADS1115 MUX/PGA, picks which bank a data
-    register reads from);
-  - **read-set** bits (ready flags);
+  - a **bank selector**: a register field (e.g. the ADS1115 MUX/PGA), or up to four fields from
+    different registers (e.g. the MPU-6050 sleep bit plus its accelerometer and gyro ranges),
+    picks which bank a data register reads from;
+  - **read-set** bits (ready flags) and **write-clear** bits (self-clearing commands such as a
+    soft reset);
   - **read-only** ranges.
 - **`sim-clock`**: a host link that reads the virtual clock and pauses the VM at an exact virtual
   time.
@@ -195,6 +197,7 @@ checks this by running the vibration demo twice and comparing the logs byte for 
 |---|---|---|
 | `adxl345` | `x`, `y`, `z` (g) | DEVID 0xE5, BW_RATE/POWER_CTL/DATA_FORMAT; all ranges, 10-bit and full resolution; DATA_READY always set. Default address 0x53. |
 | `ads1115` | `ain0`..`ain3` (V) | Config register: MUX (all 8 inputs incl. differential) and PGA select the result, OS bit reads "done". Default address **0x49**: 0x48 is taken by the tmp105 the esp32 machine hard-wires. |
+| `mpu6050` | `x`, `y`, `z` (g), `gx`, `gy`, `gz` (°/s), `temp_c` (°C) | WHO_AM_I 0x68; all accelerometer and gyro ranges (ACCEL_CONFIG, GYRO_CONFIG); powers up asleep and reads zeros until the firmware clears SLEEP; DEVICE_RESET self-clears; DATA_RDY always set. Address 0x68 or 0x69. Default rate 1 kHz (the accelerometer output rate). |
 | `generic` | declared per sensor | `registers` (initial contents), `channels` → `{offset, format (u)int8/16/24/32_be/le, scale, bias}`, `stride`, `read_only`, `read_set`. |
 
 **Waveforms** (any channel): a number; `sine {freq_hz, amplitude, offset, phase_deg}`;
@@ -227,7 +230,9 @@ reads zero.
 - **Cold builds are slow.** Builds live inside the container, so the first build of a session's
   container compiles ESP-IDF (45–110 s on the development laptop); incremental builds take ~3 s.
 - The ADXL345 model has no FIFO, interrupts, tap/activity detection or JUSTIFY; the ADS1115 model
-  has no comparator or ALERT pin.
+  has no comparator or ALERT pin. The MPU-6050 model has no FIFO, DMP, interrupts, motion
+  detection, self-test, cycle mode or auxiliary I2C master; DEVICE_RESET clears itself but does not
+  restore the other registers, and data registers read zero (not the last sample) while asleep.
 
 ## Comparison with prior art
 

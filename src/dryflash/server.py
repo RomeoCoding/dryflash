@@ -115,7 +115,9 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         [{"model": "adxl345", "name": "accel", "address": 83, "waveform": {...}}]; see sensor_set.
         Common keys: model, name, address, bus (0/1), rate_hz (new samples per virtual second),
         waveform {channel: spec}. Models: adxl345 (channels x/y/z in g; follows DATA_FORMAT),
-        ads1115 (ain0..ain3 in V; follows MUX and PGA), and generic, which emulates any
+        ads1115 (ain0..ain3 in V; follows MUX and PGA), mpu6050 (x/y/z in g, gx/gy/gz in deg/s,
+        temp_c; address 0x68 or 0x69; follows ACCEL_CONFIG/GYRO_CONFIG; reads zeros until the
+        firmware clears SLEEP in PWR_MGMT_1, like the real chip), and generic, which emulates any
         register-mapped chip from a description: registers {offset: byte or [bytes]} (power-on
         contents), channels {name: {offset, format, scale, bias}} with format (u)int8 or
         (u)int16/24/32_be/_le and raw = value*scale + bias, stride (bytes per register address,
@@ -391,7 +393,8 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         """Change what an injected sensor reports, from virtual time at_ms (default: now) onwards.
 
         values maps channel -> number or waveform spec: adxl345 channels x/y/z in g, ads1115 ain0..ain3
-        in volts, generic sensors their declared channels. Channels not given keep their waveform.
+        in volts, mpu6050 x/y/z in g, gx/gy/gz in deg/s and temp_c, generic sensors their declared
+        channels. Channels not given keep their waveform.
         E.g. {"z": 1.0} or {"x": {"type": "sine", "freq_hz": 50, "amplitude": 0.2}}.
         For byte-identical deterministic runs give an explicit at_ms (or call this while paused,
         e.g. after emu_run_for), because "now" on a running board depends on host timing.

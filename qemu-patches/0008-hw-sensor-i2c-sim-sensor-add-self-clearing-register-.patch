@@ -1,0 +1,138 @@
+From 2b6c44286b0852b95d1e93e6c544079eb4f44bd1 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 11:50:17 +0000
+Subject: [PATCH] hw/sensor/i2c-sim-sensor: add self-clearing register bits
+
+Many chips have command bits that the hardware clears once the command
+is done, and drivers poll for that: Adafruit's MPU-6050 driver sets
+DEVICE_RESET in PWR_MGMT_1 and loops until it reads back as zero.  In a
+plain register file the bit sticks and such a driver hangs.
+
+Add a "write-clear" property, a list of offset:mask items like read-set.
+Masked bits of a guest write are dropped before the byte is stored, so
+they always read back as zero.  The command itself (here, the reset of
+the other registers) is not performed; that stays a host-side concern.
+
+Factor the offset:mask list parsing out of the read-set code so that
+both properties share it.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/i2c_sim_sensor.c | 40 ++++++++++++++++++++++++++++----------
+ 1 file changed, 30 insertions(+), 10 deletions(-)
+
+diff --git a/hw/sensor/i2c_sim_sensor.c b/hw/sensor/i2c_sim_sensor.c
+index 32f89e8..4eb2a66 100755
+--- a/hw/sensor/i2c_sim_sensor.c
++++ b/hw/sensor/i2c_sim_sensor.c
+@@ -22,6 +22,8 @@
+  *    registers ("bank-fields"), e.g. a sleep bit and the accelerometer and
+  *    gyroscope range fields of an IMU;
+  *  - read-set: bits forced to one when read (status "ready" flags);
++ *  - write-clear: bits the guest may set that always read back as zero
++ *    (self-clearing command bits such as a soft reset);
+  *  - read-only: byte ranges the guest cannot write (IDs, status).
+  *
+  * Host to device, one command per line:
+@@ -95,6 +97,9 @@ struct I2CSimSensorState {
+     uint8_t read_set_off[SIM_MAX_MASKS];
+     uint8_t read_set_mask[SIM_MAX_MASKS];
+     unsigned n_read_set;
++    uint8_t write_clear_off[SIM_MAX_MASKS];
++    uint8_t write_clear_mask[SIM_MAX_MASKS];
++    unsigned n_write_clear;
+     bool read_only[SIM_REGS];
+ 
+     /* Transfer state */
+@@ -117,6 +122,7 @@ struct I2CSimSensorState {
+     uint8_t bank_last;
+     char *bank_fields;
+     char *read_set;
++    char *write_clear;
+     char *read_only_str;
+ };
+ 
+@@ -374,6 +380,13 @@ static int sim_send_byte(I2CSlave *i2c, uint8_t data)
+         return 0;
+     }
+     if (!s->read_only[s->pointer] && !sim_is_banked(s, s->pointer)) {
++        unsigned i;
++
++        for (i = 0; i < s->n_write_clear; i++) {
++            if (s->write_clear_off[i] == s->pointer) {
++                data &= ~s->write_clear_mask[i];
++            }
++        }
+         s->regs[s->pointer] = data;
+         if (s->wr_first < 0) {
+             s->wr_first = s->wr_last = s->pointer;
+@@ -432,34 +445,36 @@ static bool sim_parse_bank_fields(I2CSimSensorState *s, Error **errp)
+     return true;
+ }
+ 
+-static bool sim_parse_read_set(I2CSimSensorState *s, Error **errp)
++/* Parse a list of "offset:mask" items, as used by read-set and write-clear */
++static bool sim_parse_masks(const char *prop, const char *str, uint8_t *offs,
++                            uint8_t *masks, unsigned *n, Error **errp)
+ {
+     g_auto(GStrv) items = NULL;
+     guint i;
+ 
+-    if (!s->read_set || !*s->read_set) {
++    if (!str || !*str) {
+         return true;
+     }
+-    items = g_strsplit(s->read_set, ",", -1);
++    items = g_strsplit(str, ",", -1);
+     for (i = 0; items[i]; i++) {
+         uint64_t off, mask;
+         char *colon = strchr(items[i], ':');
+ 
+         if (i >= SIM_MAX_MASKS || !colon) {
+-            error_setg(errp, "read-set: expected up to %d 'offset:mask' items",
+-                       SIM_MAX_MASKS);
++            error_setg(errp, "%s: expected up to %d 'offset:mask' items",
++                       prop, SIM_MAX_MASKS);
+             return false;
+         }
+         *colon = '\0';
+         if (qemu_strtou64(items[i], NULL, 0, &off) ||
+             qemu_strtou64(colon + 1, NULL, 0, &mask) ||
+             off >= SIM_REGS || mask > 0xff) {
+-            error_setg(errp, "read-set: bad item '%s'", items[i]);
++            error_setg(errp, "%s: bad item '%s'", prop, items[i]);
+             return false;
+         }
+-        s->read_set_off[i] = off;
+-        s->read_set_mask[i] = mask;
+-        s->n_read_set = i + 1;
++        offs[i] = off;
++        masks[i] = mask;
++        *n = i + 1;
+     }
+     return true;
+ }
+@@ -540,7 +555,11 @@ static void sim_realize(DeviceState *dev, Error **errp)
+         s->bank_size = s->bank_last - s->bank_first + 1;
+         s->banks = g_malloc0(s->nbanks * s->bank_size);
+     }
+-    if (!sim_parse_read_set(s, errp) || !sim_parse_read_only(s, errp)) {
++    if (!sim_parse_masks("read-set", s->read_set, s->read_set_off,
++                         s->read_set_mask, &s->n_read_set, errp) ||
++        !sim_parse_masks("write-clear", s->write_clear, s->write_clear_off,
++                         s->write_clear_mask, &s->n_write_clear, errp) ||
++        !sim_parse_read_only(s, errp)) {
+         return;
+     }
+     g_queue_init(&s->pending);
+@@ -590,6 +609,7 @@ static Property sim_properties[] = {
+     DEFINE_PROP_UINT8("bank-last", I2CSimSensorState, bank_last, 0),
+     DEFINE_PROP_STRING("bank-fields", I2CSimSensorState, bank_fields),
+     DEFINE_PROP_STRING("read-set", I2CSimSensorState, read_set),
++    DEFINE_PROP_STRING("write-clear", I2CSimSensorState, write_clear),
+     DEFINE_PROP_STRING("read-only", I2CSimSensorState, read_only_str),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+-- 
+2.43.0
+

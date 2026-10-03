@@ -13,6 +13,7 @@ pytestmark = [pytest.mark.sensors, pytest.mark.anyio]
 
 VIB = REPO / "examples" / "vibration_monitor"
 ADC = REPO / "tests" / "firmware" / "adc_probe"
+MPU = REPO / "tests" / "firmware" / "mpu_probe"
 ADS = {"model": "ads1115", "name": "adc", "address": 0x49, "rate_hz": 200,
        "waveform": {"ain0": 1.5, "ain1": 0.5, "ain2": 0.0, "ain3": 3.0}}
 
@@ -132,3 +133,13 @@ async def test_sensor_errors_are_reported():
         r = await c.call_tool("emu_start", {"project_dir": str(ADC), "target": "esp32c3",
                                             "sensors": [ADS]})
         assert r.is_error and "only on esp32" in r.content[0].text
+
+
+async def test_mpu6050_ranges_sleep_reset_and_determinism():
+    async with Client(create_server()) as c:
+        runs = [await call(c, "test_run", project_dir=str(MPU), scenario_file="scenario.yaml") for _ in range(2)]
+    for r in runs:
+        assert r["passed"], {k: v for k, v in r.items() if k != "transcript"}
+    logs = [upto(r["transcript"], r"tick 12 [^\n]*\n") for r in runs]
+    assert logs[0] == logs[1], "two deterministic runs must give byte-identical UART output"
+    assert len(re.findall(r"^range afs\d fs\d ", logs[0], re.M)) == 16

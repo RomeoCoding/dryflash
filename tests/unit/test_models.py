@@ -86,6 +86,85 @@ class TestAds1115:
             self.model(address=0x48)
 
 
+class TestMpu6050:
+    """Vectors from RM-MPU-6000A-00 rev 4.0 (section numbers in the comments)."""
+
+    def model(self, **kw):
+        spec = {"model": "mpu6050", "name": "imu"}
+        spec.update(kw)
+        return make_model(spec)
+
+    @staticmethod
+    def words(data):
+        return [int.from_bytes(data[i:i + 2], "big", signed=True) for i in range(0, len(data), 2)]
+
+    def test_defaults_and_device_props(self):
+        m = self.model()
+        assert (m.address, m.bus, m.rate_hz) == (0x68, 0, 1000)
+        p = m.device_props()
+        # bank = SLEEP (PWR_MGMT_1 bit 6) | AFS_SEL << 1 | FS_SEL << 3, over ACCEL_XOUT_H..GYRO_ZOUT_L
+        assert p["bank-fields"] == "0x6b:0x40,0x1c:0x18,0x1b:0x18"
+        assert (p["bank-first"], p["bank-last"]) == ("0x3b", "0x48")
+        assert p["read-set"] == "0x3a:0x01"                  # INT_STATUS DATA_RDY_INT (4.17)
+        assert "0x6b:0x80" in p["write-clear"]               # DEVICE_RESET self-clears (4.30)
+        assert "0x75" in p["read-only"]
+
+    def test_power_on_registers(self):
+        regs = writes_by_bank(self.model().initial_writes())[(-1, 0)]
+        assert regs[0x6B] == 0x40                            # PWR_MGMT_1 resets to sleep (section 3)
+        assert regs[0x75] == 0x68                            # WHO_AM_I (4.34)
+        assert regs[0x1B] == regs[0x1C] == 0x00
+
+    def test_address_0x69_allowed_but_whoami_stays_0x68(self):
+        m = self.model(address=0x69)
+        assert m.address == 0x69
+        assert writes_by_bank(m.initial_writes())[(-1, 0)][0x75] == 0x68
+
+    @pytest.mark.parametrize("address", [0x53, 0x6A])
+    def test_other_addresses_rejected(self, address):
+        with pytest.raises(SensorSpecError, match="0x68 or 0x69"):
+            self.model(address=address)
+
+    def test_only_awake_banks_are_written(self):
+        w = self.model().encode({c: 0.0 for c in ("x", "y", "z", "gx", "gy", "gz", "temp_c")})
+        banks = sorted({b for b, _, _ in w})
+        assert banks == [afs << 1 | fs << 3 for fs in range(4) for afs in range(4)]
+        assert all(b & 1 == 0 for b in banks)                # sleep banks stay zero
+        assert {off for _, off, _ in w} == {0x3B} and {len(d) for _, _, d in w} == {14}
+
+    @pytest.mark.parametrize("afs, lsb_per_g", [(0, 16384), (1, 8192), (2, 4096), (3, 2048)])
+    def test_accel_scaling_per_afs_sel(self, afs, lsb_per_g):              # 4.18
+        w = writes_by_bank(self.model().encode({"x": 0.5, "y": -1.0, "z": 0.25, "gx": 0, "gy": 0, "gz": 0,
+                                                 "temp_c": 36.53}))
+        ax, ay, az, t, *_ = self.words(w[(afs << 1, 0x3B)])
+        assert (ax, ay, az) == (lsb_per_g // 2, -lsb_per_g, lsb_per_g // 4)
+        assert t == 0                                        # 36.53 degC is raw 0 (4.19)
+
+    @pytest.mark.parametrize("fs, lsb_per_dps", [(0, 131.0), (1, 65.5), (2, 32.8), (3, 16.4)])
+    def test_gyro_scaling_per_fs_sel(self, fs, lsb_per_dps):              # 4.20
+        w = writes_by_bank(self.model().encode({"x": 0, "y": 0, "z": 0, "gx": 100.0, "gy": -10.0, "gz": 0.0,
+                                                 "temp_c": 25.0}))
+        *_, gx, gy, gz = self.words(w[(fs << 3, 0x3B)])
+        assert (gx, gy, gz) == (round(100 * lsb_per_dps), round(-10 * lsb_per_dps), 0)
+
+    def test_temperature_and_clipping(self):
+        w = writes_by_bank(self.model().encode({"x": 3.0, "y": -3.0, "z": 0, "gx": 300.0, "gy": 0, "gz": 0,
+                                                 "temp_c": 25.0}))
+        ax, ay, _, t, gx, *_ = self.words(w[(0, 0x3B)])
+        assert (ax, ay) == (32767, -32768)                   # +-2 g full scale clips
+        assert gx == 32767                                   # 300 deg/s beyond +-250
+        assert t == round((25.0 - 36.53) * 340)              # T = raw/340 + 36.53 (4.19)
+
+    def test_guest_config_is_described(self):
+        m = self.model()
+        assert m.describe()["guest_config"]["sleeping"] is True
+        m.on_guest_write(0x19, bytes([4, 0x03, 0x10, 0x08]))  # SMPLRT_DIV 4, DLPF 3, FS_SEL 2, AFS_SEL 1
+        m.on_guest_write(0x6B, bytes([0x01]))
+        g = m.describe()["guest_config"]
+        assert g == {"sleeping": False, "accel_range_g": 4, "gyro_range_dps": 1000,
+                     "sample_rate_hz": 200.0, "dlpf_cfg": 3, "clock_source": 1}
+
+
 class TestGeneric:
     def test_channels_registers_and_props(self):
         m = make_model({

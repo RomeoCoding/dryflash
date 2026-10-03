@@ -213,3 +213,60 @@ One entry per non-obvious call: the decision, the alternative, and why.
 - **README quick-start built the wrong image.** `docker build -f docker/Dockerfile -t dryflash .`
   builds the last stage (`test`, CMD pytest); the runtime image needs `--target base`. CI already
   used the right target.
+
+## M5
+
+Milestone brief: docs/provenance/verus-peripherals-prompt.md (SPI sensors, GPIO, MPU-6050, display
+capture, UART over TCP; Verus is the acceptance test).
+
+### Step 0 (spike, experiments/m5_spike)
+
+- **Measured, not assumed.** A throwaway SSI device, register traces and `tests/firmware/spi_probe`
+  answered the three questions; the evidence is in experiments/m5_spike/README.md. Summary:
+  ESP-IDF polling transfers complete, the interrupt-driven path hangs (the controller never raises
+  its IRQ), DMA transfers "succeed" with no data, and two controller bugs garble every read
+  (`byte`/`i`, already fixed in the unmerged espressif/qemu PR #144; a phantom command phase,
+  not reported upstream). Arduino-style libraries drive CS by GPIO and leave all three controller
+  CS lines enabled, so correct framing needs a CS from a modelled GPIO pin. User SSI devices
+  cannot reach SPI2/SPI3 today; a machine-init-done notifier can wire their CS.
+- **The `byte`/`i` fix is not claimed as a finding.** PR #144 (2026-02-28) reported and fixed it
+  first; our patch will credit it, or be dropped if #144 merges before we propose ours.
+- **Proposed, awaiting the owner at the checkpoint:** build M5c (GPIO) before the CS part of M5b;
+  explicit bus names `spi2`/`spi3`; separate patches for SPI2/3 wiring, the command phase,
+  `byte`/`i`, the completion IRQ, `ssi-sim-sensor` and GPIO.
+
+### M5a: MPU-6050
+
+- **Bank selection over several register fields (patch 0007), not gyro-at-±250-only and not two
+  selectors.** The brief offered three options. The data the guest must read depends on three
+  fields in three registers: SLEEP (PWR_MGMT_1), AFS_SEL (ACCEL_CONFIG) and FS_SEL (GYRO_CONFIG).
+  "Accelerometer ranges only" would silently mis-scale gyro data at other ranges, and two
+  selectors still could not express SLEEP. A list of up to four `offset:mask` fields forming the
+  bank number covers all three (32 banks over 0x3B-0x48) and stays generic (other IMUs split
+  their state the same way). The old single-field properties are unchanged, and the ADXL345 and
+  ADS1115 tests pass on the new binary.
+- **Sleep is a bank, so "reads zero until woken" needs no host reaction.** The 16 SLEEP=1 banks are
+  never written and stay zero, which is what the chip returns after power-on. Deviation: a chip put
+  back to sleep after running keeps its last sample; the model reads zero. Recorded in the README.
+- **Self-clearing bits (patch 0008, `write-clear`).** Adafruit's MPU-6050 driver sets DEVICE_RESET
+  and polls until it reads back 0; a plain register file hangs it. Only the bits the register map
+  documents as self-clearing are listed: DEVICE_RESET (4.30) and USER_CTRL bits 0-2 (4.29);
+  SIGNAL_PATH_RESET is not documented as self-clearing and stays a plain register. The reset's
+  side effect (restoring defaults) is not modelled.
+- **Datasheet: RM-MPU-6000A-00 revision 4.0 (2012-03-09).** Revision 4.2 is the newest, but its
+  official link served an HTML page instead of the PDF, so 4.0 (SparkFun mirror, sha256
+  `ccaa6312…7c05d`) was used and **not compared against 4.2**. Section numbers in the code refer
+  to 4.0.
+- **Default rate 1 kHz**, the accelerometer output rate (4.2). The cost is 16 W lines per sample,
+  the same line rate as the ADS1115 at 250 Hz.
+- **Addresses are restricted to 0x68/0x69** (AD0), with an error naming both; any other address
+  would be a spec mistake, not a chip variant.
+
+### Non-goals (from the brief)
+
+- **BLE and Wi-Fi.** Espressif's QEMU has no radio or Bluetooth controller model. The only route
+  would be NimBLE over HCI-UART to a virtual controller on the host, far beyond this milestone.
+  Verus's USB-serial fallback covers testing, and M5e makes it reachable from the host.
+- **The on-chip ADC, SPI DMA and SPI slave mode.** Not modelled. Step 0 showed DMA transfers return
+  `ESP_OK` without data, so firmware under test must use `SPI_DMA_DISABLED`; that limit is
+  documented rather than modelled, because sensor transactions fit in the 64-byte buffer.

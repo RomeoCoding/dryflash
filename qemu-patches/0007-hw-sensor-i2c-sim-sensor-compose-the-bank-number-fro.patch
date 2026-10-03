@@ -1,0 +1,192 @@
+From cba62aebbca46c78bbb7155b477b51910883e8b8 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 11:49:21 +0000
+Subject: [PATCH] hw/sensor/i2c-sim-sensor: compose the bank number from
+ several fields
+
+The bank selector reads one field of one register.  Some chips spread
+the state that decides what a data register returns over several
+registers: an IMU such as the MPU-6050 has a sleep bit in PWR_MGMT_1 and
+separate full-scale fields in ACCEL_CONFIG and GYRO_CONFIG.  Modelling
+those on the host instead would mean reacting to guest writes, which
+happens at a host-dependent time and breaks reproducible runs.
+
+Add a "bank-fields" property, a list of up to four offset:mask items.
+Each field, shifted down to bit 0, supplies the next bits of the bank
+number, the first item the least significant.  It replaces bank-reg,
+bank-width, bank-mask and bank-shift; existing users are unchanged.
+
+Example (MPU-6050: sleep, accelerometer range, gyroscope range; 32 banks
+over the data registers 0x3b-0x48):
+  -device i2c-sim-sensor,bus=i2c-bus.0,address=0x68,chardev=s0,
+          bank-fields=0x6b:0x40,,0x1c:0x18,,0x1b:0x18,
+          bank-first=0x3b,bank-last=0x48
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/i2c_sim_sensor.c | 85 +++++++++++++++++++++++++++++++++++---
+ 1 file changed, 80 insertions(+), 5 deletions(-)
+
+diff --git a/hw/sensor/i2c_sim_sensor.c b/hw/sensor/i2c_sim_sensor.c
+index 95ef904..32f89e8 100755
+--- a/hw/sensor/i2c_sim_sensor.c
++++ b/hw/sensor/i2c_sim_sensor.c
+@@ -17,7 +17,10 @@
+  *    registers such as the ADS1115);
+  *  - one bank selector: (bits of a 1- or 2-byte register) >> shift picks
+  *    which bank a range of data registers is read from, e.g. the ADS1115
+- *    MUX and PGA fields select a conversion result;
++ *    MUX and PGA fields select a conversion result.  Alternatively the
++ *    bank number is put together from up to four fields in different
++ *    registers ("bank-fields"), e.g. a sleep bit and the accelerometer and
++ *    gyroscope range fields of an IMU;
+  *  - read-set: bits forced to one when read (status "ready" flags);
+  *  - read-only: byte ranges the guest cannot write (IDs, status).
+  *
+@@ -40,6 +43,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
++#include "qemu/host-utils.h"
+ #include "qemu/timer.h"
+ #include "qemu/module.h"
+ #include "qapi/error.h"
+@@ -58,6 +62,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(I2CSimSensorState, I2C_SIM_SENSOR)
+ #define SIM_MAX_UPDATE      32
+ #define SIM_LINE_MAX        512
+ #define SIM_MAX_MASKS       8
++#define SIM_MAX_FIELDS      4
+ #define SIM_MAX_PENDING     (1 << 20)
+ 
+ typedef struct SimUpdate {
+@@ -80,6 +85,13 @@ struct I2CSimSensorState {
+     unsigned nbanks;
+     unsigned bank_size;
+ 
++    /* bank-fields: field i supplies bank number bits [pos, pos + width) */
++    uint8_t field_off[SIM_MAX_FIELDS];
++    uint8_t field_mask[SIM_MAX_FIELDS];
++    uint8_t field_shift[SIM_MAX_FIELDS];
++    uint8_t field_pos[SIM_MAX_FIELDS];
++    unsigned n_fields;
++
+     uint8_t read_set_off[SIM_MAX_MASKS];
+     uint8_t read_set_mask[SIM_MAX_MASKS];
+     unsigned n_read_set;
+@@ -103,6 +115,7 @@ struct I2CSimSensorState {
+     uint8_t bank_shift;
+     uint8_t bank_first;
+     uint8_t bank_last;
++    char *bank_fields;
+     char *read_set;
+     char *read_only_str;
+ };
+@@ -128,7 +141,15 @@ static void sim_send(I2CSimSensorState *s, const char *fmt, ...)
+ static unsigned sim_current_bank(I2CSimSensorState *s)
+ {
+     uint16_t sel = s->regs[s->bank_reg];
++    unsigned i, bank = 0;
+ 
++    if (s->n_fields) {
++        for (i = 0; i < s->n_fields; i++) {
++            bank |= ((s->regs[s->field_off[i]] & s->field_mask[i]) >>
++                     s->field_shift[i]) << s->field_pos[i];
++        }
++        return bank;
++    }
+     if (s->bank_width == 2) {
+         sel = (sel << 8) | s->regs[(uint8_t)(s->bank_reg + 1)];
+     }
+@@ -372,6 +393,45 @@ static uint8_t sim_recv_byte(I2CSlave *i2c)
+     return sim_read_byte(s, s->pointer++);
+ }
+ 
++static bool sim_parse_bank_fields(I2CSimSensorState *s, Error **errp)
++{
++    g_auto(GStrv) items = g_strsplit(s->bank_fields, ",", -1);
++    unsigned pos = 0;
++    guint i;
++
++    for (i = 0; items[i]; i++) {
++        uint64_t off, mask;
++        char *colon = strchr(items[i], ':');
++
++        if (i >= SIM_MAX_FIELDS || !colon) {
++            error_setg(errp, "bank-fields: expected up to %d 'offset:mask' "
++                       "items", SIM_MAX_FIELDS);
++            return false;
++        }
++        *colon = '\0';
++        if (qemu_strtou64(items[i], NULL, 0, &off) ||
++            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
++            off >= SIM_REGS || !mask || mask > 0xff) {
++            error_setg(errp, "bank-fields: bad item '%s'", items[i]);
++            return false;
++        }
++        s->field_off[i] = off;
++        s->field_mask[i] = mask;
++        s->field_shift[i] = ctz32(mask);
++        s->field_pos[i] = pos;
++        /* The first item supplies the least significant bank number bits */
++        pos += 32 - clz32(mask >> ctz32(mask));
++        s->n_fields = i + 1;
++    }
++    if (pos > 6) {
++        error_setg(errp, "bank-fields select among 2^%u banks, at most %d",
++                   pos, SIM_MAX_BANKS);
++        return false;
++    }
++    s->nbanks = 1u << pos;
++    return true;
++}
++
+ static bool sim_parse_read_set(I2CSimSensorState *s, Error **errp)
+ {
+     g_auto(GStrv) items = NULL;
+@@ -451,10 +511,18 @@ static void sim_realize(DeviceState *dev, Error **errp)
+         error_setg(errp, "bank-width must be 0 (no banking), 1 or 2");
+         return;
+     }
+-    if (s->bank_width) {
+-        if (!s->bank_mask || s->bank_first > s->bank_last) {
+-            error_setg(errp, "banking needs bank-mask and "
+-                       "bank-first <= bank-last");
++    if (s->bank_fields && *s->bank_fields) {
++        if (s->bank_width) {
++            error_setg(errp, "bank-fields replaces bank-reg, bank-width, "
++                       "bank-mask and bank-shift; give one or the other");
++            return;
++        }
++        if (!sim_parse_bank_fields(s, errp)) {
++            return;
++        }
++    } else if (s->bank_width) {
++        if (!s->bank_mask) {
++            error_setg(errp, "banking needs bank-mask");
+             return;
+         }
+         s->nbanks = (s->bank_mask >> s->bank_shift) + 1;
+@@ -463,6 +531,12 @@ static void sim_realize(DeviceState *dev, Error **errp)
+                        s->nbanks, SIM_MAX_BANKS);
+             return;
+         }
++    }
++    if (s->nbanks) {
++        if (s->bank_first > s->bank_last) {
++            error_setg(errp, "banking needs bank-first <= bank-last");
++            return;
++        }
+         s->bank_size = s->bank_last - s->bank_first + 1;
+         s->banks = g_malloc0(s->nbanks * s->bank_size);
+     }
+@@ -514,6 +588,7 @@ static Property sim_properties[] = {
+     DEFINE_PROP_UINT8("bank-shift", I2CSimSensorState, bank_shift, 0),
+     DEFINE_PROP_UINT8("bank-first", I2CSimSensorState, bank_first, 0),
+     DEFINE_PROP_UINT8("bank-last", I2CSimSensorState, bank_last, 0),
++    DEFINE_PROP_STRING("bank-fields", I2CSimSensorState, bank_fields),
+     DEFINE_PROP_STRING("read-set", I2CSimSensorState, read_set),
+     DEFINE_PROP_STRING("read-only", I2CSimSensorState, read_only_str),
+     DEFINE_PROP_END_OF_LIST(),
+-- 
+2.43.0
+

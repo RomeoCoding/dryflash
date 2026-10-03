@@ -22,6 +22,35 @@ noted; the workaround is listed instead.
    ARBITRATION or TIME_OUT. It's fine for master-side sensor reads, but it hides timing bugs.
    Not patched.
 
+The following were found in M5 step 0 (2026-10-03); the evidence is in
+`experiments/m5_spike/README.md`, and the patches are pending (M5b).
+
+9. **`esp32_spi_txrx_buffer()` tests the data byte instead of the loop index**
+   (`if (byte < tx_bytes)` / `if (byte < rx_bytes)`). Any received byte whose transmitted
+   counterpart is ≥ the rx length is dropped, and the guest reads its own tx data back. An
+   Adafruit_MAX31855 read (0xFF filler) returns `ff ff ff ff`. **Already reported and fixed upstream
+   in espressif/qemu PR #144** (QEMU-282, open since 2026-02-28, also covering esp32c3/s3); our fix
+   will credit it.
+10. **Phantom command phase on user SPI transactions** (not found upstream). `SPI_CMD_USR` sends a
+    command phase if `SPI_USER.USR_COMMAND` is set **or** `SPI_USER2.COMMAND_BITLEN` is non-zero.
+    The TRM (v5.8, §20.3 and `SPI_USER2_REG`) says a phase is enabled only by its control bit,
+    and the bit length "is only valid when SPI_USR_COMMAND is set to 1". ESP-IDF's "no command"
+    (`usr_command=0`, bitlen field 15) therefore clocks 2 extra bytes, and Arduino (reset bitlen 4)
+    1 extra byte, so every read is shifted. Fix tested in the spike; flash/NVS on SPI1 unaffected.
+11. **The SPI controllers never raise their interrupt.** The IRQ is created and routed to the
+    interrupt matrix, but `qemu_set_irq` is never called, and `SPI_SLAVE` always reads
+    `TRANS_DONE | TRANS_INTEN`. ESP-IDF's interrupt-driven `spi_device_transmit()` blocks forever;
+    the polling API works.
+12. **SPI DMA is not modelled, and fails silently.** `DMA_CONF`/`DMA_IN_LINK` writes are ignored,
+    and the transfer completes with `ESP_OK` while the DMA buffer is never written. Firmware must
+    use `SPI_DMA_DISABLED`.
+13. **SPI2/SPI3 can't take command-line devices** (same cause as item 1: `periph_bus`, all buses
+    named `spi`). An SSI device with an unconnected CS input is always selected and never sees a
+    frame start.
+14. **The GPIO model only implements `GPIO_STRAP`.** `OUT`, `ENABLE`, `IN`, W1TS/W1TC and pin
+    interrupts read 0 or are dropped. A pull-up input reads 0, so an active-low button reads
+    "pressed" forever.
+
 ## QEMU core (inherited)
 
 1. **`tmp105` ignores `temperature=` given on `-device`**: `tmp105_reset()` zeroes it after the

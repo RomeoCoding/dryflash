@@ -33,6 +33,7 @@ class SensorModel:
     model = ""
     channels: tuple[str, ...] = ()
     default_address = 0
+    addresses: tuple[int, ...] = ()  # the addresses the chip can strap to; empty: any
     default_rate_hz = 100.0
     unit = ""
 
@@ -46,6 +47,9 @@ class SensorModel:
         self.address = _int(spec.get("address", self.default_address), "address")
         if not 0x08 <= self.address <= 0x77:
             raise SensorSpecError(f"sensor {self.name}: address 0x{self.address:02x} is not a 7-bit I2C address")
+        if self.addresses and self.address not in self.addresses:
+            raise SensorSpecError(f"sensor {self.name}: a {self.model} answers only at "
+                                  f"{' or '.join(f'0x{a:02x}' for a in self.addresses)}, not 0x{self.address:02x}")
         if self.bus == 0 and self.address == TMP105_ADDRESS:
             raise SensorSpecError(f"sensor {self.name}: address 0x48 on bus 0 is taken by the tmp105 the esp32 "
                                   "machine hard-wires; pick another address (e.g. ADS1115 with ADDR=VDD is 0x49)")
@@ -55,6 +59,7 @@ class SensorModel:
         self.base_dir = base_dir
         self._timeline: dict[str, list[tuple[int, Waveform]]] = {c: [(0, parse_waveform(0.0))] for c in self.channels}
         self.guest_regs = bytearray(256)
+        self.guest_regs[:] = self.initial_registers()  # describe() is right before the first guest write
         self.schedule(0, spec.get("waveform", {}) or {})
 
     # ----- values over virtual time ---------------------------------------------------------------
@@ -205,6 +210,60 @@ class Ads1115(SensorModel):
                 "data_rate_sps": (8, 16, 32, 64, 128, 250, 475, 860)[(cfg >> 5) & 7]}
 
 
+class Mpu6050(SensorModel):
+    """InvenSense MPU-6050 6-axis IMU. Channels x, y, z (g), gx, gy, gz (deg/s), temp_c (degC).
+
+    Register behaviour follows the MPU-6000/MPU-6050 Register Map and Descriptions, RM-MPU-6000A-00
+    rev 4.0 (section numbers below). The bank number is SLEEP | AFS_SEL << 1 | FS_SEL << 3 over the
+    data registers 0x3B..0x48, so the guest reads data scaled for its own ranges, and zeros while the
+    chip sleeps (power-on state), without the host reacting to guest writes.
+    """
+
+    model = "mpu6050"
+    channels = ("x", "y", "z", "gx", "gy", "gz", "temp_c")
+    default_address = 0x68
+    addresses = (0x68, 0x69)  # AD0 low / high (4.34)
+    default_rate_hz = 1000.0  # accelerometer output rate is 1 kHz (4.2)
+    unit = "g (x, y, z), deg/s (gx, gy, gz), degC (temp_c)"
+    DATA = 0x3B
+    ACCEL_LSB_PER_G = (16384, 8192, 4096, 2048)       # AFS_SEL 0..3: +-2/4/8/16 g (4.18)
+    GYRO_LSB_PER_DPS = (131.0, 65.5, 32.8, 16.4)      # FS_SEL 0..3: +-250/500/1000/2000 deg/s (4.20)
+
+    def device_props(self):
+        return {"bank-fields": "0x6b:0x40,0x1c:0x18,0x1b:0x18",  # PWR_MGMT_1 SLEEP, ACCEL_CONFIG, GYRO_CONFIG
+                "bank-first": "0x3b", "bank-last": "0x48",
+                "read-set": "0x3a:0x01",                          # INT_STATUS DATA_RDY_INT (4.17)
+                # DEVICE_RESET (4.30) and FIFO/I2C_MST/SIG_COND_RESET (4.29) clear themselves
+                "write-clear": "0x6b:0x80,0x6a:0x07",
+                "read-only": "0x3a-0x60,0x72-0x73,0x75"}           # status, data, FIFO_COUNT, WHO_AM_I
+
+    def initial_registers(self):
+        r = bytearray(256)  # every register resets to 0x00 except these two (section 3)
+        r[0x6B] = 0x40      # PWR_MGMT_1: SLEEP
+        r[0x75] = 0x68      # WHO_AM_I: upper 6 bits of the address, AD0 not reflected (4.34)
+        self.guest_regs[:] = r
+        return r
+
+    def encode(self, values):
+        temp = _clip(round((values["temp_c"] - 36.53) * 340), 16)  # T = raw/340 + 36.53 (4.19)
+        out = []
+        for fs, dps_lsb in enumerate(self.GYRO_LSB_PER_DPS):
+            gyro = [_clip(round(values[a] * dps_lsb), 16) for a in ("gx", "gy", "gz")]
+            for afs, g_lsb in enumerate(self.ACCEL_LSB_PER_G):
+                accel = [_clip(round(values[a] * g_lsb), 16) for a in ("x", "y", "z")]
+                data = b"".join(v.to_bytes(2, "big", signed=True) for v in (*accel, temp, *gyro))
+                out.append((afs << 1 | fs << 3, self.DATA, data))  # SLEEP=0 banks; sleep banks stay 0
+        return out
+
+    def guest_config(self):
+        r = self.guest_regs
+        dlpf = r[0x1A] & 7
+        gyro_rate = 8000.0 if dlpf in (0, 7) else 1000.0  # (4.2)
+        return {"sleeping": bool(r[0x6B] & 0x40), "accel_range_g": 2 << ((r[0x1C] >> 3) & 3),
+                "gyro_range_dps": 250 << ((r[0x1B] >> 3) & 3),
+                "sample_rate_hz": gyro_rate / (1 + r[0x19]), "dlpf_cfg": dlpf, "clock_source": r[0x6B] & 7}
+
+
 _FORMATS = {f"{s}int{b}_{e}" if b > 8 else f"{s}int{b}": (b, s == "", e)
             for s in ("", "u") for b in (8, 16, 24, 32) for e in ("be", "le")}
 
@@ -252,7 +311,7 @@ class GenericRegisterMap(SensorModel):
         return out
 
 
-MODELS = {m.model: m for m in (Adxl345, Ads1115, GenericRegisterMap)}
+MODELS = {m.model: m for m in (Adxl345, Ads1115, Mpu6050, GenericRegisterMap)}
 
 
 def make_model(spec: dict, base_dir: Path | None = None) -> SensorModel:
