@@ -475,6 +475,9 @@ async def attach_sensors(session: Any, specs: list[dict], gpio_specs: list[dict]
     if specs and "i2c-sim-sensor" not in caps:
         raise SensorSpecError("this QEMU has no i2c-sim-sensor device: sensor injection needs the "
                               "dryflash-sensors image (docker/qemu-sensors.Dockerfile)")
+    if gpio_specs and "sim-gpio" not in caps:
+        raise SensorSpecError("this QEMU has no sim-gpio device: GPIO injection needs the dryflash-sensors "
+                              "image (docker/qemu-sensors.Dockerfile)")
     if "sim-clock" not in caps:
         return []
     base = Path(session.config.project_dir) if session.config.project_dir else None
