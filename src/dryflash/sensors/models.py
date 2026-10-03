@@ -29,8 +29,13 @@ def _int(v: Any, what: str) -> int:
         raise SensorSpecError(f"{what} must be an integer, got {v!r}") from None
 
 
+SPI_BUSES = ("spi2", "spi3")  # the esp32's general-purpose SPI controllers (SPI2_HOST/HSPI, SPI3_HOST/VSPI)
+SPI_CS_LINES = 3               # hardware CS outputs per controller
+
+
 class SensorModel:
     model = ""
+    interface = "i2c"  # or "spi"
     channels: tuple[str, ...] = ()
     default_address = 0
     addresses: tuple[int, ...] = ()  # the addresses the chip can strap to; empty: any
@@ -41,6 +46,44 @@ class SensorModel:
         if not spec.get("name"):
             raise SensorSpecError("every sensor needs a 'name'")
         self.name = str(spec["name"])
+        if self.interface == "spi":
+            self._init_spi(spec)
+        else:
+            self._init_i2c(spec)
+        self.rate_hz = float(spec.get("rate_hz", self.default_rate_hz))
+        if not 0 < self.rate_hz <= 10000:
+            raise SensorSpecError(f"sensor {self.name}: rate_hz must be in (0, 10000]")
+        self.base_dir = base_dir
+        self._timeline: dict[str, list[tuple[int, Waveform]]] = {c: [(0, parse_waveform(0.0))] for c in self.channels}
+        self.guest_regs = bytearray(256)
+        self.guest_regs[:] = self.initial_registers()  # describe() is right before the first guest write
+        self.schedule(0, spec.get("waveform", {}) or {})
+
+    def _init_spi(self, spec: dict) -> None:
+        if "address" in spec:
+            raise SensorSpecError(f"sensor {self.name}: a {self.model} is an SPI device; give bus "
+                                  f"({'/'.join(SPI_BUSES)}), cs and optionally cs_gpio, not an address")
+        self.bus = str(spec.get("bus", "spi3")).lower()
+        if self.bus not in SPI_BUSES:
+            raise SensorSpecError(f"sensor {self.name}: bus must be one of {', '.join(SPI_BUSES)} "
+                                  f"(SPI2_HOST/SPI3_HOST), got {spec.get('bus')!r}")
+        self.cs = _int(spec.get("cs", 0), "cs")
+        if not 0 <= self.cs < SPI_CS_LINES:
+            raise SensorSpecError(f"sensor {self.name}: cs must be 0-{SPI_CS_LINES - 1} (the controller's CS "
+                                  "lines); to wire CS to a GPIO pad give cs_gpio as well")
+        self.cs_gpio: int | None = None
+        if spec.get("cs_gpio") is not None:
+            from .gpio import GpioSpecError, check_pad
+            try:
+                self.cs_gpio = check_pad(spec["cs_gpio"], f"sensor {self.name}: cs_gpio")
+            except GpioSpecError as e:
+                raise SensorSpecError(str(e)) from None
+        self.address = None
+
+    def _init_i2c(self, spec: dict) -> None:
+        for key in ("cs", "cs_gpio"):
+            if key in spec:
+                raise SensorSpecError(f"sensor {self.name}: {key} applies to SPI sensors; a {self.model} is on I2C")
         self.bus = _int(spec.get("bus", 0), "bus")
         if self.bus not in (0, 1):
             raise SensorSpecError(f"sensor {self.name}: bus must be 0 or 1 (the esp32 I2C controllers)")
@@ -53,14 +96,6 @@ class SensorModel:
         if self.bus == 0 and self.address == TMP105_ADDRESS:
             raise SensorSpecError(f"sensor {self.name}: address 0x48 on bus 0 is taken by the tmp105 the esp32 "
                                   "machine hard-wires; pick another address (e.g. ADS1115 with ADDR=VDD is 0x49)")
-        self.rate_hz = float(spec.get("rate_hz", self.default_rate_hz))
-        if not 0 < self.rate_hz <= 10000:
-            raise SensorSpecError(f"sensor {self.name}: rate_hz must be in (0, 10000]")
-        self.base_dir = base_dir
-        self._timeline: dict[str, list[tuple[int, Waveform]]] = {c: [(0, parse_waveform(0.0))] for c in self.channels}
-        self.guest_regs = bytearray(256)
-        self.guest_regs[:] = self.initial_registers()  # describe() is right before the first guest write
-        self.schedule(0, spec.get("waveform", {}) or {})
 
     # ----- values over virtual time ---------------------------------------------------------------
     def schedule(self, from_ns: int, waveforms: dict[str, Any]) -> None:
@@ -106,10 +141,18 @@ class SensorModel:
     def guest_config(self) -> dict:
         return {}
 
+    def on_stream(self, t_ns: int, data: bytes) -> None:
+        """A whole guest write transfer (I2C stream mode, e.g. a display); ignored by register chips."""
+
     def describe(self) -> dict:
-        return {"name": self.name, "model": self.model, "bus": self.bus, "address": f"0x{self.address:02x}",
-                "rate_hz": self.rate_hz, "channels": list(self.channels), "unit": self.unit,
-                "guest_config": self.guest_config()}
+        d = {"name": self.name, "model": self.model, "bus": self.bus}
+        if self.interface == "spi":
+            d.update(cs=self.cs, cs_gpio=self.cs_gpio)
+        else:
+            d["address"] = f"0x{self.address:02x}"
+        d.update(rate_hz=self.rate_hz, channels=list(self.channels), unit=self.unit,
+                 guest_config=self.guest_config())
+        return d
 
 
 def _clip(v: int, bits: int, signed: bool = True) -> int:
@@ -264,6 +307,133 @@ class Mpu6050(SensorModel):
                 "sample_rate_hz": gyro_rate / (1 + r[0x19]), "dlpf_cfg": dlpf, "clock_source": r[0x6B] & 7}
 
 
+FAULTS = ("none", "open", "short_gnd", "short_vcc")
+
+
+def _fault_codes(spec: Any) -> Any:
+    """Waveform specs for a fault channel may name the faults; turn the names into codes 0-3."""
+    if isinstance(spec, str):
+        if spec.lower() not in FAULTS:
+            raise SensorSpecError(f"unknown fault {spec!r}; use one of {', '.join(FAULTS)}")
+        return FAULTS.index(spec.lower())
+    if isinstance(spec, dict):
+        return {k: (_fault_codes(v) if k in ("steps", "value") else v) for k, v in spec.items()}
+    if isinstance(spec, list):
+        return [_fault_codes(v) for v in spec]
+    return spec
+
+
+class _ThermocoupleModel(SensorModel):
+    interface = "spi"
+
+    def schedule(self, from_ns, waveforms):
+        if isinstance(waveforms, dict) and "fault" in waveforms:
+            waveforms = dict(waveforms, fault=_fault_codes(waveforms["fault"]))
+        super().schedule(from_ns, waveforms)
+
+    @staticmethod
+    def fault_code(v: float) -> int:
+        return max(0, min(len(FAULTS) - 1, round(v)))
+
+    def device_props(self):
+        return {"mode": "frame"}  # a read-only shift register, frame at offset 0
+
+    def describe(self):
+        d = super().describe()
+        d["faults"] = list(FAULTS[:len(self.fault_bits)])
+        return d
+
+
+class Max31855(_ThermocoupleModel):
+    """Maxim MAX31855 thermocouple-to-digital converter (K type): 32-bit read-only SPI frame.
+
+    Datasheet 19-5793 Rev 2 (2/12), Tables 2-5. Channels: tc_c (the thermocouple temperature the
+    chip reports, after its cold-junction compensation and linear 41.276 uV/degC conversion),
+    cj_c (internal reference-junction temperature) and fault (none, open, short_gnd, short_vcc).
+    """
+
+    model = "max31855"
+    channels = ("tc_c", "cj_c", "fault")
+    default_rate_hz = 10.0  # conversion time 100 ms max (Electrical Characteristics)
+    unit = "degC (tc_c, cj_c); fault: none/open/short_gnd/short_vcc"
+    fault_bits = (0, 0x1, 0x2, 0x4)  # D0 OC, D1 SCG, D2 SCV (Table 2)
+
+    def frame(self, values: dict[str, float]) -> int:
+        fault = self.fault_code(values["fault"])
+        if fault == 1:
+            tc = 0x1FFF  # open input: sign bit 0 and D[30:18] all ones ("Serial Interface")
+        else:
+            tc = _clip(round(values["tc_c"] / 0.25), 14) & 0x3FFF       # 0.25 degC, Table 4
+        cj = _clip(round(values["cj_c"] / 0.0625), 12) & 0x0FFF         # 0.0625 degC, Table 5
+        return tc << 18 | (1 if fault else 0) << 16 | cj << 4 | self.fault_bits[fault]
+
+    def encode(self, values):
+        return [(-1, 0, self.frame(values).to_bytes(4, "big"))]
+
+
+class Max6675(_ThermocoupleModel):
+    """Maxim MAX6675 K-thermocouple converter: 16-bit read-only SPI frame (datasheet 19-2235 Rev 1).
+
+    D15 dummy sign bit 0, D14-D3 temperature in 0.25 degC from 0 to 1023.75, D2 open input,
+    D1 device ID 0, D0 three-state (reads 0 here). Channels tc_c and fault (none or open).
+    """
+
+    model = "max6675"
+    channels = ("tc_c", "fault")
+    default_rate_hz = 5.0  # conversion time 0.22 s max
+    unit = "degC (tc_c); fault: none/open"
+    fault_bits = (0, 0x4)
+
+    def schedule(self, from_ns, waveforms):
+        if isinstance(waveforms, dict) and isinstance(waveforms.get("fault"), str) \
+                and waveforms["fault"].lower() not in FAULTS[:2]:
+            raise SensorSpecError(f"sensor {self.name}: a max6675 only detects an open input; fault is "
+                                  "none or open")
+        super().schedule(from_ns, waveforms)
+
+    def frame(self, values: dict[str, float]) -> int:
+        fault = min(self.fault_code(values["fault"]), 1)
+        t = max(0, min(4095, round(values["tc_c"] / 0.25)))
+        return t << 3 | self.fault_bits[fault]
+
+    def encode(self, values):
+        return [(-1, 0, self.frame(values).to_bytes(2, "big"))]
+
+
+class Ssd1306(SensorModel):
+    """Solomon Systech SSD1306 128x64 / 128x32 OLED controller on I2C (datasheet Rev 1.1).
+
+    Not a sensor: the device runs in stream mode and every write transfer is decoded into the
+    display state (sensors/display.py). Reads return 0. No channels.
+    """
+
+    model = "ssd1306"
+    channels = ()
+    default_address = 0x3C
+    addresses = (0x3C, 0x3D)  # SA0 low / high (8.1.5)
+    default_rate_hz = 1.0     # nothing to sample
+    unit = ""
+
+    def __init__(self, spec, base_dir=None):
+        from .display import Ssd1306State
+        self.display = Ssd1306State()
+        self.last_write_ns: int | None = None
+        super().__init__(spec, base_dir)
+
+    def device_props(self):
+        return {"stream": "on"}
+
+    def encode(self, values):
+        return []
+
+    def on_stream(self, t_ns, data):
+        self.display.feed_transfer(data)
+        self.last_write_ns = t_ns
+
+    def guest_config(self):
+        return self.display.describe()
+
+
 _FORMATS = {f"{s}int{b}_{e}" if b > 8 else f"{s}int{b}": (b, s == "", e)
             for s in ("", "u") for b in (8, 16, 24, 32) for e in ("be", "le")}
 
@@ -311,7 +481,7 @@ class GenericRegisterMap(SensorModel):
         return out
 
 
-MODELS = {m.model: m for m in (Adxl345, Ads1115, Mpu6050, GenericRegisterMap)}
+MODELS = {m.model: m for m in (Adxl345, Ads1115, Mpu6050, Max31855, Max6675, Ssd1306, GenericRegisterMap)}
 
 
 def make_model(spec: dict, base_dir: Path | None = None) -> SensorModel:

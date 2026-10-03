@@ -1,0 +1,266 @@
+From 434d76170ddf20ac89061000fab1448ab4bf7899 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:19:08 +0000
+Subject: [PATCH] hw/xtensa/esp32: wire SPI and GPIO devices given on the
+ command line
+
+SPI peripherals could not be attached to the general-purpose SPI
+controllers: like the I2C controllers before, SPI2 and SPI3 were
+realized on the SoC's private bus, and all four SPI buses were named
+"spi", so -device ...,bus= could not reach them.  Even when attached by
+board code, an SSI device whose chip-select input is left unconnected is
+always selected and never sees the start of a frame.
+
+Realize SPI2 and SPI3 on sysbus-default and name their buses "spi2" and
+"spi3" (ESP-IDF's SPI2_HOST/SPI3_HOST), through a new "bus-name"
+property of the SPI controller; SPI0/SPI1 keep "spi".
+
+Once the machine is built, a machine-init-done notifier wires
+command-line devices:
+ - an SSI peripheral on spi2/spi3 gets its chip select from the
+   controller CS output named by its "cs" property, or from the GPIO pad
+   named by a "cs-gpio" property (Arduino-style drivers toggle CS through
+   GPIO and leave the controller's CS lines enabled but unrouted);
+ - a sim-gpio device drives the external level of every pad and watches
+   every pad's level.
+Pads with several consumers are fanned out with split-irq.
+
+Also build ssi-sim-sensor for the esp32 machine.
+
+Example (a MAX31855-style frame device whose CS is GPIO5):
+  -chardev socket,id=tc,path=/tmp/tc.sock,server=on,wait=off
+  -device ssi-sim-sensor,bus=spi3,cs=0,cs-gpio=5,chardev=tc
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/ssi/esp32_spi.c         |   5 +-
+ hw/xtensa/Kconfig          |   2 +
+ hw/xtensa/esp32.c          | 131 ++++++++++++++++++++++++++++++++++++-
+ include/hw/ssi/esp32_spi.h |   1 +
+ 4 files changed, 137 insertions(+), 2 deletions(-)
+
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index 7591311..48d4763 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -338,6 +338,9 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
+ 
+ static void esp32_spi_realize(DeviceState *dev, Error **errp)
+ {
++    Esp32SpiState *s = ESP32_SPI(dev);
++
++    s->spi = ssi_create_bus(dev, s->bus_name ? s->bus_name : "spi");
+ }
+ 
+ static void esp32_spi_init(Object *obj)
+@@ -350,11 +353,11 @@ static void esp32_spi_init(Object *obj)
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
+ 
+-    s->spi = ssi_create_bus(DEVICE(s), "spi");
+     qdev_init_gpio_out_named(DEVICE(s), &s->cs_gpio[0], SSI_GPIO_CS, ESP32_SPI_CS_COUNT);
+ }
+ 
+ static Property esp32_spi_properties[] = {
++    DEFINE_PROP_STRING("bus-name", Esp32SpiState, bus_name),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/hw/xtensa/Kconfig b/hw/xtensa/Kconfig
+index ce81bc8..62a0089 100644
+--- a/hw/xtensa/Kconfig
++++ b/hw/xtensa/Kconfig
+@@ -31,6 +31,8 @@ config XTENSA_ESP32
+     select DWC_SDMMC
+     select TMP105
+     imply I2C_SIM_SENSOR
++    imply SSI_SIM_SENSOR
++    select SPLIT_IRQ
+     select LED
+     select ESP_RGB
+ 
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index 3dfcf6c..ffda10a 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -22,6 +22,9 @@
+ #include "hw/misc/unimp.h"
+ #include "hw/irq.h"
+ #include "hw/i2c/i2c.h"
++#include "hw/ssi/ssi.h"
++#include "hw/core/split-irq.h"
++#include "hw/misc/sim_gpio.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/xtensa/esp32.h"
+ #include "hw/misc/ssi_psram.h"
+@@ -485,7 +488,19 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+         const hwaddr spi_base[] = {
+             DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
+         };
+-        qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
++        if (i >= 2) {
++            /*
++             * Like the I2C controllers, SPI2 and SPI3 (the general-purpose
++             * HSPI and VSPI) sit on sysbus-default so that their buses,
++             * "spi2" and "spi3", are reachable from the command line.
++             */
++            g_autofree char *bus = g_strdup_printf("spi%d", i);
++
++            qdev_prop_set_string(DEVICE(&s->spi[i]), "bus-name", bus);
++            sysbus_realize(SYS_BUS_DEVICE(&s->spi[i]), &error_fatal);
++        } else {
++            qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
++        }
+ 
+         esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
+ 
+@@ -729,6 +744,7 @@ struct Esp32MachineState {
+ 
+     Esp32SocState esp32;
+     DeviceState *flash_dev;
++    Notifier init_done;
+ };
+ #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
+ 
+@@ -821,6 +837,116 @@ static void esp32_machine_init_sd(Esp32SocState *ss)
+     }
+ }
+ 
++
++/* Chip-select input of an SSI peripheral, or NULL if it has none */
++static qemu_irq esp32_ssi_cs_input(DeviceState *dev)
++{
++    if (!object_property_find(OBJECT(dev), SSI_GPIO_CS "[0]")) {
++        return NULL;
++    }
++    return qdev_get_gpio_in_named(dev, SSI_GPIO_CS, 0);
++}
++
++static void esp32_add_pad_sink(GPtrArray **sinks, int pad, qemu_irq irq)
++{
++    if (!sinks[pad]) {
++        sinks[pad] = g_ptr_array_new();
++    }
++    g_ptr_array_add(sinks[pad], irq);
++}
++
++/*
++ * Devices given with -device exist only once the board is built, so they
++ * are wired here:
++ *  - a sim-gpio device drives every pad's external level and watches every
++ *    pad;
++ *  - an SSI peripheral on spi2/spi3 takes its chip select from the
++ *    controller's CS output selected by its "cs" property, or, if it has a
++ *    "cs-gpio" property >= 0, from that GPIO pad (drivers that toggle CS
++ *    by hand, such as Arduino libraries, leave the controller CS unused).
++ * A pad with several consumers is fanned out with a split-irq.
++ */
++static void esp32_machine_wire_devices(Notifier *n, void *data)
++{
++    Esp32MachineState *ms = container_of(n, Esp32MachineState, init_done);
++    Esp32SocState *s = &ms->esp32;
++    DeviceState *gpio = DEVICE(&s->gpio);
++    GPtrArray *sinks[ESP32_GPIO_PINS] = { NULL };
++    bool ambiguous = false;
++    Object *sim = object_resolve_path_type("", TYPE_SIM_GPIO, &ambiguous);
++
++    if (ambiguous) {
++        error_report("esp32: at most one sim-gpio device is supported");
++        exit(1);
++    }
++    if (sim) {
++        int lines = object_property_get_uint(sim, "lines", &error_abort);
++
++        for (int pad = 0; pad < MIN(lines, ESP32_GPIO_PINS); pad++) {
++            qdev_connect_gpio_out(DEVICE(sim), pad,
++                qdev_get_gpio_in_named(gpio, ESP32_GPIO_PIN_IN, pad));
++            esp32_add_pad_sink(sinks, pad, qdev_get_gpio_in(DEVICE(sim), pad));
++        }
++    }
++    for (int i = 2; i < ESP32_SPI_COUNT; i++) {
++        BusChild *kid;
++
++        QTAILQ_FOREACH(kid, &BUS(s->spi[i].spi)->children, sibling) {
++            DeviceState *dev = kid->child;
++            qemu_irq cs = esp32_ssi_cs_input(dev);
++            int64_t pad = -1;
++            uint8_t index = SSI_PERIPHERAL(dev)->cs_index;
++
++            if (!cs) {
++                continue;
++            }
++            if (object_property_find(OBJECT(dev), "cs-gpio")) {
++                pad = object_property_get_int(OBJECT(dev), "cs-gpio",
++                                              &error_abort);
++            }
++            if (pad >= ESP32_GPIO_PINS) {
++                error_report("esp32: %s: cs-gpio %" PRId64 " is not a pad",
++                             object_get_typename(OBJECT(dev)), pad);
++                exit(1);
++            }
++            if (pad >= 0) {
++                esp32_add_pad_sink(sinks, pad, cs);
++            } else if (index < ESP32_SPI_CS_COUNT) {
++                qdev_connect_gpio_out_named(DEVICE(&s->spi[i]), SSI_GPIO_CS,
++                                            index, cs);
++                qemu_set_irq(cs, 1);    /* idle until the first transfer */
++            } else {
++                error_report("esp32: spi%d has CS lines 0-%d, not %u", i,
++                             ESP32_SPI_CS_COUNT - 1, index);
++                exit(1);
++            }
++        }
++    }
++    for (int pad = 0; pad < ESP32_GPIO_PINS; pad++) {
++        qemu_irq out;
++
++        if (!sinks[pad]) {
++            continue;
++        }
++        if (sinks[pad]->len == 1) {
++            out = g_ptr_array_index(sinks[pad], 0);
++        } else {
++            DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
++
++            qdev_prop_set_uint16(split, "num-lines", sinks[pad]->len);
++            qdev_realize_and_unref(split, NULL, &error_fatal);
++            for (guint k = 0; k < sinks[pad]->len; k++) {
++                qdev_connect_gpio_out(split, k,
++                                      g_ptr_array_index(sinks[pad], k));
++            }
++            out = qdev_get_gpio_in(split, 0);
++        }
++        qdev_connect_gpio_out_named(gpio, ESP32_GPIO_PIN_OUT, pad, out);
++        qemu_set_irq(out, !!(s->gpio.level & BIT_ULL(pad)));
++        g_ptr_array_free(sinks[pad], true);
++    }
++}
++
+ static void esp32_machine_init(MachineState *machine)
+ {
+     BlockBackend* blk = NULL;
+@@ -862,6 +988,9 @@ static void esp32_machine_init(MachineState *machine)
+ 
+     esp32_machine_init_sd(ss);
+ 
++    ms->init_done.notify = esp32_machine_wire_devices;
++    qemu_add_machine_init_done_notifier(&ms->init_done);
++
+     /* Need MMU initialized prior to ELF loading,
+      * so that ELF gets loaded into virtual addresses
+      */
+diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
+index 0b5a9b2..34f47b2 100644
+--- a/include/hw/ssi/esp32_spi.h
++++ b/include/hw/ssi/esp32_spi.h
+@@ -18,6 +18,7 @@ typedef struct Esp32SpiState {
+     qemu_irq cs_gpio[ESP32_SPI_CS_COUNT];
+     int num_cs;
+     SSIBus *spi;
++    char *bus_name;
+ 
+     uint32_t addr_reg;
+     uint32_t ctrl_reg;
+-- 
+2.43.0
+

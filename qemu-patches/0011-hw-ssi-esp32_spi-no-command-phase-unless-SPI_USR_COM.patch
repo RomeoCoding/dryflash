@@ -1,0 +1,43 @@
+From 3545285dd87dc654e84e62c21fa8b466417cca28 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:09:25 +0000
+Subject: [PATCH] hw/ssi/esp32_spi: no command phase unless SPI_USR_COMMAND is
+ set
+
+A user transaction sends a command phase if SPI_USER.USR_COMMAND is set
+or if SPI_USER2.USR_COMMAND_BITLEN is non-zero.  The TRM (v5.8, section
+20.3) says each phase is enabled only by its control bit in SPI_USER,
+and that the command bit length "is only valid when SPI_USR_COMMAND is
+set to 1".
+
+ESP-IDF's spi_master disables the command phase with usr_command = 0
+and usr_command_bitlen = 0 - 1 (field value 15), so every transaction
+clocked two extra bytes before the data; Arduino-ESP32 leaves the reset
+value 4 and got one.  Every read from an SPI2/SPI3 device came back
+shifted by one or two bytes.
+
+Key the command phase on USR_COMMAND alone.  The SPI1 flash paths set
+USR_COMMAND whenever they send a command; NVS and raw flash read, write
+and erase still work.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/ssi/esp32_spi.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index f47bfca..4d0d12f 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -275,7 +275,7 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+ 
+     case R_SPI_CMD_USR_MASK:
+         maybe_encrypt_data(s);
+-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
++        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND)) {
+             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
+             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
+         } else {
+-- 
+2.43.0
+

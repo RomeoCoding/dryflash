@@ -1,0 +1,136 @@
+From 16fb84c984a917946d2e3a4c2a829da2e148b291 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:38:11 +0000
+Subject: [PATCH] hw/xtensa/esp32_intc: keep source levels and route them
+ combinationally
+
+The interrupt matrix forwarded a source's level to the mapped CPU
+interrupt only when the source changed, and wrote it straight to that
+CPU line.  Two consequences:
+
+ - ESP-IDF disables a peripheral interrupt by re-routing its source to
+   an unused CPU interrupt and enables it by routing it back
+   (esp_intr_disable/esp_intr_enable).  A source that was already
+   asserted when it was routed back never reached the CPU: e.g. the SPI
+   master driver queues a transaction, re-enables its interrupt and
+   waits for it, and waited forever.
+ - Sources sharing one CPU interrupt overwrote each other's level, so
+   one source going low could hide another that was still asserted.
+
+Keep the level of every source and drive each CPU interrupt from the OR
+of the sources mapped to it, re-evaluated whenever a source changes or
+a map register is written, as the hardware's combinational routing
+does.  Also fix the off-by-one in the map register range check.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/xtensa/esp32_intc.c         | 53 +++++++++++++++++++++++++++-------
+ include/hw/xtensa/esp32_intc.h |  3 ++
+ 2 files changed, 45 insertions(+), 11 deletions(-)
+
+diff --git a/hw/xtensa/esp32_intc.c b/hw/xtensa/esp32_intc.c
+index fed7cf7..356ee66 100644
+--- a/hw/xtensa/esp32_intc.c
++++ b/hw/xtensa/esp32_intc.c
+@@ -22,27 +22,53 @@
+ 
+ #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
+ 
++/*
++ * Drive CPU interrupt out_index of CPU cpu from the OR of all sources mapped
++ * to it.  Like the hardware, routing is combinational: remapping a source
++ * that is already asserted asserts its new CPU interrupt at once.
++ */
++static void esp32_intmatrix_update(Esp32IntMatrixState *s, int cpu,
++                                   int out_index)
++{
++    const XtensaConfig *config;
++    bool level = false;
++
++    if (s->outputs[cpu] == NULL) {
++        return;
++    }
++    config = s->cpu[cpu]->env.config;
++    for (int src = 0; src < ESP32_INT_MATRIX_INPUTS; ++src) {
++        if (IRQ_MAP(cpu, src) == out_index && test_bit(src, s->levels)) {
++            level = true;
++            break;
++        }
++    }
++    for (int int_index = 0; int_index < config->nextint; ++int_index) {
++        if (config->extint[int_index] == out_index) {
++            qemu_set_irq(s->outputs[cpu][int_index], level);
++            break;
++        }
++    }
++}
++
+ static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
+ {
+     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
++
++    if (level) {
++        set_bit(n, s->levels);
++    } else {
++        clear_bit(n, s->levels);
++    }
+     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+-        if (s->outputs[i] == NULL) {
+-            continue;
+-        }
+-        int out_index = IRQ_MAP(i, n);
+-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
+-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
+-                qemu_set_irq(s->outputs[i][int_index], level);
+-                break;
+-            }
+-        }
++        esp32_intmatrix_update(s, i, IRQ_MAP(i, n));
+     }
+ }
+ 
+ static inline uint8_t* get_map_entry(Esp32IntMatrixState* s, hwaddr addr)
+ {
+     int source_index = addr / sizeof(uint32_t);
+-    if (source_index > ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT) {
++    if (source_index >= ESP32_INT_MATRIX_INPUTS * ESP32_CPU_COUNT) {
+         error_report("%s: source_index %d out of range", __func__, source_index);
+         return NULL;
+     }
+@@ -63,7 +89,12 @@ static void esp32_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, uns
+     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+     uint8_t* map_entry = get_map_entry(s, addr);
+     if (map_entry != NULL) {
++        int cpu = (addr / sizeof(uint32_t)) / ESP32_INT_MATRIX_INPUTS;
++        uint8_t old = *map_entry;
++
+         *map_entry = value & 0x1f;
++        esp32_intmatrix_update(s, cpu, old);
++        esp32_intmatrix_update(s, cpu, *map_entry);
+     }
+ }
+ 
+diff --git a/include/hw/xtensa/esp32_intc.h b/include/hw/xtensa/esp32_intc.h
+index 262dbd1..4906a22 100644
+--- a/include/hw/xtensa/esp32_intc.h
++++ b/include/hw/xtensa/esp32_intc.h
+@@ -11,6 +11,7 @@
+ #pragma once
+ 
+ #include "qemu/osdep.h"
++#include "qemu/bitmap.h"
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
+ #include "qapi/error.h"
+@@ -34,6 +35,8 @@ typedef struct Esp32IntMatrixState {
+     MemoryRegion iomem;
+     qemu_irq *outputs[ESP32_CPU_COUNT];
+     uint8_t irq_map[ESP32_CPU_COUNT][ESP32_INT_MATRIX_INPUTS];
++    /* current source levels */
++    DECLARE_BITMAP(levels, ESP32_INT_MATRIX_INPUTS);
+ 
+     /* properties */
+     XtensaCPU *cpu[ESP32_CPU_COUNT];
+-- 
+2.43.0
+

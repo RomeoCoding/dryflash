@@ -1,0 +1,503 @@
+From d291fab8d3dd6c319dc66e5acf8f552da7814c2a Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:06:19 +0000
+Subject: [PATCH] hw/gpio/esp32_gpio: model the output, input and interrupt
+ registers
+
+The esp32 GPIO model only implemented GPIO_STRAP: writes to GPIO_OUT and
+GPIO_ENABLE were dropped and GPIO_IN read 0, so firmware could neither
+drive an LED nor read a button, and gpio_isr_handler_add() succeeded
+but no pin interrupt could ever fire.
+
+Model GPIO_OUT/OUT1, GPIO_ENABLE/ENABLE1 (with their W1TS/W1TC
+aliases), GPIO_IN/IN1, GPIO_STATUS/STATUS1, the per-CPU interrupt
+status registers and GPIO_PINn (interrupt type and enable, open drain),
+following the ESP32 Technical Reference Manual, chapter 6.  A pad is
+driven when its output is enabled, and otherwise takes the level applied
+from outside through new named input lines; every pad's level is
+published on named output lines, so boards can attach buttons or wire a
+pad to another device (e.g. an SPI chip select).  Edge and level
+interrupts latch into GPIO_STATUS and raise interrupt source 22.
+
+The GPIO matrix routing of peripheral signals, IO_MUX (pull-ups) and
+NMIs are not modelled.  The register model is enabled by a "pins"
+property that only the esp32 machine sets, so the esp32c3/esp32s3
+subclasses keep their current behaviour.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/gpio/esp32_gpio.c         | 288 ++++++++++++++++++++++++++++++++++-
+ hw/xtensa/esp32.c            |   3 +
+ include/hw/gpio/esp32_gpio.h |  72 +++++++++
+ 3 files changed, 358 insertions(+), 5 deletions(-)
+
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 4fea1f5..20857bb 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -6,6 +6,19 @@
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 or
+  * (at your option) any later version.
++ *
++ * With the "pins" property set, the output, output-enable, input and
++ * interrupt registers of the GPIO block are modelled (ESP32 TRM v5.8,
++ * chapter 6).  Each pad's level is
++ *
++ *   driven high:  output enabled, GPIO_OUT bit set, push-pull
++ *   driven low:   output enabled, GPIO_OUT bit clear
++ *   otherwise:    the level applied from outside (ESP32_GPIO_PIN_IN)
++ *
++ * and is published on ESP32_GPIO_PIN_OUT.  GPIO_IN reads the pad levels.
++ * Not modelled: the GPIO matrix routing of peripheral signals (pads always
++ * follow GPIO_OUT/GPIO_ENABLE), IO_MUX (pull-ups, input enable), RTC IO,
++ * and non-maskable interrupts.
+  */
+ 
+ #include "qemu/osdep.h"
+@@ -19,17 +32,167 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/gpio/esp32_gpio.h"
+ 
++/* GPIO_PINn_REG exists for pads 0-19, 21-23, 25-27 and 32-39 */
++#define ESP32_GPIO_EXISTS   0xff0eefffffULL
++/* Pads 34-39 are input only */
++#define ESP32_GPIO_OUTPUTS  (ESP32_GPIO_EXISTS & 0x3ffffffffULL)
++#define ESP32_GPIO_PIN_MASK (R_GPIO_PIN0_PAD_DRIVER_MASK | \
++                             R_GPIO_PIN0_INT_TYPE_MASK | \
++                             R_GPIO_PIN0_WAKEUP_ENABLE_MASK | \
++                             R_GPIO_PIN0_INT_ENA_MASK)
++
++enum {
++    INT_DISABLED = 0,
++    INT_RISING = 1,
++    INT_FALLING = 2,
++    INT_ANY_EDGE = 3,
++    INT_LOW = 4,
++    INT_HIGH = 5,
++};
++
++static uint64_t esp32_gpio_int_mask(Esp32GpioState *s, uint32_t ena)
++{
++    uint64_t m = 0;
++
++    for (int n = 0; n < ESP32_GPIO_PINS; n++) {
++        if (FIELD_EX32(s->pin[n], GPIO_PIN0, INT_ENA) & ena) {
++            m |= BIT_ULL(n);
++        }
++    }
++    return m;
++}
++
++static void esp32_gpio_update_irq(Esp32GpioState *s)
++{
++    uint64_t pending = s->status &
++        esp32_gpio_int_mask(s, ESP32_GPIO_INT_ENA_PRO | ESP32_GPIO_INT_ENA_APP);
++
++    /*
++     * GPIO_INTERRUPT_PRO and GPIO_INTERRUPT_APP share interrupt source 22
++     * in this machine's interrupt matrix.
++     */
++    qemu_set_irq(s->irq, pending != 0);
++}
++
++/* Recompute the pad levels; latch edges and levels into GPIO_STATUS */
++static void esp32_gpio_update(Esp32GpioState *s)
++{
++    uint64_t od = 0, drv, high, low, level, changed;
++
++    for (int n = 0; n < ESP32_GPIO_PINS; n++) {
++        if (FIELD_EX32(s->pin[n], GPIO_PIN0, PAD_DRIVER)) {
++            od |= BIT_ULL(n);
++        }
++    }
++    drv = s->enable & ESP32_GPIO_OUTPUTS;
++    high = drv & s->out & ~od;      /* an open-drain 1 releases the pad */
++    low = drv & ~s->out;
++    level = (high | (s->ext & ~low)) & ESP32_GPIO_EXISTS;
++    changed = level ^ s->level;
++    s->level = level;
++
++    for (int n = 0; n < ESP32_GPIO_PINS; n++) {
++        uint64_t bit = BIT_ULL(n);
++        bool hit;
++
++        switch (FIELD_EX32(s->pin[n], GPIO_PIN0, INT_TYPE)) {
++        case INT_RISING:
++            hit = changed & level & bit;
++            break;
++        case INT_FALLING:
++            hit = changed & ~level & bit;
++            break;
++        case INT_ANY_EDGE:
++            hit = changed & bit;
++            break;
++        case INT_LOW:
++            hit = !(level & bit);
++            break;
++        case INT_HIGH:
++            hit = level & bit;
++            break;
++        default:
++            hit = false;
++            break;
++        }
++        if (hit) {
++            s->status |= bit;
++        }
++    }
++    for (int n = 0; n < ESP32_GPIO_PINS; n++) {
++        if (changed & BIT_ULL(n)) {
++            qemu_set_irq(s->pin_out[n], !!(level & BIT_ULL(n)));
++        }
++    }
++    esp32_gpio_update_irq(s);
++}
++
++static void esp32_gpio_set_input(void *opaque, int n, int level)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
+ 
++    s->ext = deposit64(s->ext, n, 1, level != 0);
++    esp32_gpio_update(s);
++}
+ 
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+     uint64_t r = 0;
++
++    if (addr == A_GPIO_STRAP) {
++        return s->strap_mode;
++    }
++    if (!s->npins) {
++        return 0;
++    }
+     switch (addr) {
+-    case A_GPIO_STRAP:
+-        r = s->strap_mode;
++    case A_GPIO_OUT:
++        r = (uint32_t)s->out;
+         break;
++    case A_GPIO_OUT1:
++        r = extract64(s->out, 32, 8);
++        break;
++    case A_GPIO_SDIO_SELECT:
++        r = s->sdio_select;
++        break;
++    case A_GPIO_ENABLE:
++        r = (uint32_t)s->enable;
++        break;
++    case A_GPIO_ENABLE1:
++        r = extract64(s->enable, 32, 8);
++        break;
++    case A_GPIO_IN:
++        r = (uint32_t)s->level;
++        break;
++    case A_GPIO_IN1:
++        r = extract64(s->level, 32, 8);
++        break;
++    case A_GPIO_STATUS:
++        r = (uint32_t)s->status;
++        break;
++    case A_GPIO_STATUS1:
++        r = extract64(s->status, 32, 8);
++        break;
++    case A_GPIO_ACPU_INT ... A_GPIO_CPUSDIO_INT1: {
++        /* APP, APP NMI, PRO, PRO NMI, SDIO for pads 0-31, then for 32-39 */
++        unsigned k = (addr - A_GPIO_ACPU_INT) / 4;
++        uint64_t p = s->status & esp32_gpio_int_mask(s, BIT(k % 5));
+ 
++        r = k < 5 ? (uint32_t)p : extract64(p, 32, 8);
++        break;
++    }
++    case A_GPIO_PIN0 ... A_GPIO_PIN0 + 4 * (ESP32_GPIO_PINS - 1):
++        r = s->pin[(addr - A_GPIO_PIN0) / 4];
++        break;
++    case A_GPIO_FUNC0_IN_SEL_CFG ...
++         A_GPIO_FUNC0_IN_SEL_CFG + 4 * (ESP32_GPIO_IN_SIGNALS - 1):
++        r = s->func_in_sel[(addr - A_GPIO_FUNC0_IN_SEL_CFG) / 4];
++        break;
++    case A_GPIO_FUNC0_OUT_SEL_CFG ...
++         A_GPIO_FUNC0_OUT_SEL_CFG + 4 * (ESP32_GPIO_PINS - 1):
++        r = s->func_out_sel[(addr - A_GPIO_FUNC0_OUT_SEL_CFG) / 4];
++        break;
+     default:
+         break;
+     }
+@@ -37,11 +200,92 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ }
+ 
+ static void esp32_gpio_write(void *opaque, hwaddr addr,
+-                       uint64_t value, unsigned int size)
++                             uint64_t value, unsigned int size)
+ {
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    uint64_t lo = (uint32_t)value, hi = (value & 0xff) << 32;
++
++    if (!s->npins) {
++        return;
++    }
++    switch (addr) {
++    case A_GPIO_OUT:
++        s->out = deposit64(s->out, 0, 32, lo);
++        break;
++    case A_GPIO_OUT_W1TS:
++        s->out |= lo;
++        break;
++    case A_GPIO_OUT_W1TC:
++        s->out &= ~lo;
++        break;
++    case A_GPIO_OUT1:
++        s->out = deposit64(s->out, 32, 8, value);
++        break;
++    case A_GPIO_OUT1_W1TS:
++        s->out |= hi;
++        break;
++    case A_GPIO_OUT1_W1TC:
++        s->out &= ~hi;
++        break;
++    case A_GPIO_SDIO_SELECT:
++        s->sdio_select = value & 0xff;
++        return;
++    case A_GPIO_ENABLE:
++        s->enable = deposit64(s->enable, 0, 32, lo);
++        break;
++    case A_GPIO_ENABLE_W1TS:
++        s->enable |= lo;
++        break;
++    case A_GPIO_ENABLE_W1TC:
++        s->enable &= ~lo;
++        break;
++    case A_GPIO_ENABLE1:
++        s->enable = deposit64(s->enable, 32, 8, value);
++        break;
++    case A_GPIO_ENABLE1_W1TS:
++        s->enable |= hi;
++        break;
++    case A_GPIO_ENABLE1_W1TC:
++        s->enable &= ~hi;
++        break;
++    case A_GPIO_STATUS:
++        s->status = deposit64(s->status, 0, 32, lo);
++        break;
++    case A_GPIO_STATUS_W1TS:
++        s->status |= lo;
++        break;
++    case A_GPIO_STATUS_W1TC:
++        s->status &= ~lo;
++        break;
++    case A_GPIO_STATUS1:
++        s->status = deposit64(s->status, 32, 8, value);
++        break;
++    case A_GPIO_STATUS1_W1TS:
++        s->status |= hi;
++        break;
++    case A_GPIO_STATUS1_W1TC:
++        s->status &= ~hi;
++        break;
++    case A_GPIO_PIN0 ... A_GPIO_PIN0 + 4 * (ESP32_GPIO_PINS - 1):
++        s->pin[(addr - A_GPIO_PIN0) / 4] = value & ESP32_GPIO_PIN_MASK;
++        break;
++    case A_GPIO_FUNC0_IN_SEL_CFG ...
++         A_GPIO_FUNC0_IN_SEL_CFG + 4 * (ESP32_GPIO_IN_SIGNALS - 1):
++        s->func_in_sel[(addr - A_GPIO_FUNC0_IN_SEL_CFG) / 4] = value & 0xff;
++        return;
++    case A_GPIO_FUNC0_OUT_SEL_CFG ...
++         A_GPIO_FUNC0_OUT_SEL_CFG + 4 * (ESP32_GPIO_PINS - 1):
++        s->func_out_sel[(addr - A_GPIO_FUNC0_OUT_SEL_CFG) / 4] = value & 0xfff;
++        return;
++    default:
++        return;
++    }
++    s->status &= ESP32_GPIO_EXISTS;
++    /* Level-triggered pins latch again at once if their level persists */
++    esp32_gpio_update(s);
+ }
+ 
+-static const MemoryRegionOps uart_ops = {
++static const MemoryRegionOps esp32_gpio_ops = {
+     .read =  esp32_gpio_read,
+     .write = esp32_gpio_write,
+     .endianness = DEVICE_LITTLE_ENDIAN,
+@@ -49,10 +293,42 @@ static const MemoryRegionOps uart_ops = {
+ 
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++
++    /* The levels applied from outside (s->ext) are not part of the chip */
++    s->out = 0;
++    s->enable = 0;
++    s->status = 0;
++    s->sdio_select = 0;
++    memset(s->pin, 0, sizeof(s->pin));
++    memset(s->func_in_sel, 0, sizeof(s->func_in_sel));
++    memset(s->func_out_sel, 0, sizeof(s->func_out_sel));
++}
++
++static void esp32_gpio_reset_exit(Object *obj, ResetType type)
++{
++    Esp32GpioState *s = ESP32_GPIO(obj);
++
++    if (s->npins) {
++        esp32_gpio_update(s);
++    }
+ }
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+ {
++    Esp32GpioState *s = ESP32_GPIO(dev);
++
++    if (s->npins != 0 && s->npins != ESP32_GPIO_PINS) {
++        error_setg(errp, "pins must be 0 (strap register only) or %d",
++                   ESP32_GPIO_PINS);
++        return;
++    }
++    if (s->npins) {
++        qdev_init_gpio_in_named(dev, esp32_gpio_set_input, ESP32_GPIO_PIN_IN,
++                                s->npins);
++        qdev_init_gpio_out_named(dev, s->pin_out, ESP32_GPIO_PIN_OUT,
++                                 s->npins);
++    }
+ }
+ 
+ static void esp32_gpio_init(Object *obj)
+@@ -63,7 +339,7 @@ static void esp32_gpio_init(Object *obj)
+     /* Set the default value for the strap_mode property */
+     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+ 
+-    memory_region_init_io(&s->iomem, obj, &uart_ops, s,
++    memory_region_init_io(&s->iomem, obj, &esp32_gpio_ops, s,
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
+@@ -73,6 +349,7 @@ static Property esp32_gpio_properties[] = {
+     /* The strap_mode needs to be explicitly set in the instance init, thus, set
+      * the default value to 0. */
+     DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, 0),
++    DEFINE_PROP_UINT32("pins", Esp32GpioState, npins, 0),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -82,6 +359,7 @@ static void esp32_gpio_class_init(ObjectClass *klass, void *data)
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+ 
+     rc->phases.hold = esp32_gpio_reset_hold;
++    rc->phases.exit = esp32_gpio_reset_exit;
+     dc->realize = esp32_gpio_realize;
+     device_class_set_props(dc, esp32_gpio_properties);
+ }
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index 49d375e..3dfcf6c 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -436,8 +436,11 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+                                     qdev_get_gpio_in_named(dev, ESP32_RTC_CPU_STALL_GPIO, i));
+     }
+ 
++    qdev_prop_set_uint32(DEVICE(&s->gpio), "pins", ESP32_GPIO_PINS);
+     qdev_realize(DEVICE(&s->gpio), &s->periph_bus, &error_fatal);
+     esp32_soc_add_periph_device(sys_mem, &s->gpio, DR_REG_GPIO_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), 0,
++                       qdev_get_gpio_in(intmatrix_dev, ETS_GPIO_INTR_SOURCE));
+ 
+     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
+         const hwaddr uart_base[] = {DR_REG_UART_BASE, DR_REG_UART1_BASE, DR_REG_UART2_BASE};
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index 163b41a..b4f2353 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -9,17 +9,89 @@
+ #define ESP32_GPIO_GET_CLASS(obj)   OBJECT_GET_CLASS(Esp32GpioClass, obj, TYPE_ESP32_GPIO)
+ #define ESP32_GPIO_CLASS(klass)     OBJECT_CLASS_CHECK(Esp32GpioClass, klass, TYPE_ESP32_GPIO)
+ 
++/* Register offsets: ESP32 TRM v5.8, section 6.13.1 */
++REG32(GPIO_OUT, 0x0004)
++REG32(GPIO_OUT_W1TS, 0x0008)
++REG32(GPIO_OUT_W1TC, 0x000c)
++REG32(GPIO_OUT1, 0x0010)
++REG32(GPIO_OUT1_W1TS, 0x0014)
++REG32(GPIO_OUT1_W1TC, 0x0018)
++REG32(GPIO_SDIO_SELECT, 0x001c)
++REG32(GPIO_ENABLE, 0x0020)
++REG32(GPIO_ENABLE_W1TS, 0x0024)
++REG32(GPIO_ENABLE_W1TC, 0x0028)
++REG32(GPIO_ENABLE1, 0x002c)
++REG32(GPIO_ENABLE1_W1TS, 0x0030)
++REG32(GPIO_ENABLE1_W1TC, 0x0034)
+ REG32(GPIO_STRAP, 0x0038)
++REG32(GPIO_IN, 0x003c)
++REG32(GPIO_IN1, 0x0040)
++REG32(GPIO_STATUS, 0x0044)
++REG32(GPIO_STATUS_W1TS, 0x0048)
++REG32(GPIO_STATUS_W1TC, 0x004c)
++REG32(GPIO_STATUS1, 0x0050)
++REG32(GPIO_STATUS1_W1TS, 0x0054)
++REG32(GPIO_STATUS1_W1TC, 0x0058)
++REG32(GPIO_ACPU_INT, 0x0060)
++REG32(GPIO_ACPU_NMI_INT, 0x0064)
++REG32(GPIO_PCPU_INT, 0x0068)
++REG32(GPIO_PCPU_NMI_INT, 0x006c)
++REG32(GPIO_CPUSDIO_INT, 0x0070)
++REG32(GPIO_ACPU_INT1, 0x0074)
++REG32(GPIO_ACPU_NMI_INT1, 0x0078)
++REG32(GPIO_PCPU_INT1, 0x007c)
++REG32(GPIO_PCPU_NMI_INT1, 0x0080)
++REG32(GPIO_CPUSDIO_INT1, 0x0084)
++REG32(GPIO_PIN0, 0x0088)
++    FIELD(GPIO_PIN0, PAD_DRIVER, 2, 1)
++    FIELD(GPIO_PIN0, INT_TYPE, 7, 3)
++    FIELD(GPIO_PIN0, WAKEUP_ENABLE, 10, 1)
++    FIELD(GPIO_PIN0, INT_ENA, 13, 5)
++REG32(GPIO_FUNC0_IN_SEL_CFG, 0x0130)
++REG32(GPIO_FUNC0_OUT_SEL_CFG, 0x0530)
+ 
+ #define ESP32_STRAP_MODE_FLASH_BOOT 0x12
+ #define ESP32_STRAP_MODE_UART_BOOT  0x0f
+ 
++#define ESP32_GPIO_PINS         40
++#define ESP32_GPIO_IN_SIGNALS   256
++
++/* GPIO_PINn_INT_ENA bits */
++#define ESP32_GPIO_INT_ENA_APP      BIT(0)
++#define ESP32_GPIO_INT_ENA_APP_NMI  BIT(1)
++#define ESP32_GPIO_INT_ENA_PRO      BIT(2)
++#define ESP32_GPIO_INT_ENA_PRO_NMI  BIT(3)
++#define ESP32_GPIO_INT_ENA_SDIO     BIT(4)
++
++/*
++ * Named GPIO lines of the pin model: inputs set the level applied to a pad
++ * from outside (a button, another chip), outputs carry each pad's level.
++ */
++#define ESP32_GPIO_PIN_IN   "esp32-gpio-pin-in"
++#define ESP32_GPIO_PIN_OUT  "esp32-gpio-pin-out"
++
+ typedef struct Esp32GpioState {
+     SysBusDevice parent_obj;
+ 
+     MemoryRegion iomem;
+     qemu_irq irq;
+     uint32_t strap_mode;
++
++    /*
++     * Pin model, enabled by the "pins" property (the esp32 machine sets
++     * 40).  With pins = 0 only GPIO_STRAP is implemented, as before.
++     */
++    uint32_t npins;
++    qemu_irq pin_out[ESP32_GPIO_PINS];
++    uint64_t out;
++    uint64_t enable;
++    uint64_t ext;               /* level applied to each pad from outside */
++    uint64_t level;             /* current pad levels */
++    uint64_t status;
++    uint32_t pin[ESP32_GPIO_PINS];
++    uint32_t func_out_sel[ESP32_GPIO_PINS];
++    uint32_t func_in_sel[ESP32_GPIO_IN_SIGNALS];
++    uint32_t sdio_select;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+-- 
+2.43.0
+

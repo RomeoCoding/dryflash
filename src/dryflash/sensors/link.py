@@ -1,4 +1,4 @@
-"""Line-protocol clients for the QEMU i2c-sim-sensor and sim-clock chardevs (see qemu-patches/)."""
+"""Line-protocol clients for the QEMU sim-sensor, sim-gpio and sim-clock chardevs (see qemu-patches/)."""
 
 from __future__ import annotations
 
@@ -78,8 +78,10 @@ class _LineLink:
 
 
 class SensorLink(_LineLink):
-    def __init__(self, reader, writer, on_guest_write: Callable[[int, bytes], None] | None = None):
+    def __init__(self, reader, writer, on_guest_write: Callable[[int, bytes], None] | None = None,
+                 on_stream: Callable[[int, bytes], None] | None = None):
         self._on_guest_write = on_guest_write
+        self._on_stream = on_stream
         super().__init__(reader, writer)
 
     def _dispatch(self, f):
@@ -87,11 +89,37 @@ class SensorLink(_LineLink):
             self._resolve(f[1], int(f[2]))
         elif f[0] == "G" and len(f) == 4 and self._on_guest_write:
             self._on_guest_write(int(f[2]), bytes.fromhex(f[3]))
+        elif f[0] == "C" and len(f) == 3 and self._on_stream:
+            self._on_stream(int(f[1]), bytes.fromhex(f[2]))
         else:
             super()._dispatch(f)
 
     async def sync(self) -> int:
         """Round trip: returns once QEMU has processed every earlier line; value is virtual ns."""
+        return await self._request("S {seq}")
+
+
+class GpioLink(_LineLink):
+    """sim-gpio: drive pad levels at virtual times (L), get every pad level change back (O)."""
+
+    def __init__(self, reader, writer, on_change: Callable[[int, int, int], None] | None = None):
+        self._on_change = on_change
+        super().__init__(reader, writer)
+
+    def _dispatch(self, f):
+        if f[0] == "A" and len(f) == 3:
+            self._resolve(f[1], int(f[2]))
+        elif f[0] == "O" and len(f) == 4 and self._on_change:
+            self._on_change(int(f[1]), int(f[2]), int(f[3]))
+        else:
+            super()._dispatch(f)
+
+    @staticmethod
+    def level_line(virtual_ns: int, pad: int, level: int) -> str:
+        return f"L {int(virtual_ns)} {int(pad)} {1 if level else 0}"
+
+    async def sync(self) -> int:
+        """Returns once QEMU has processed every earlier line and every earlier report is read."""
         return await self._request("S {seq}")
 
 

@@ -231,9 +231,41 @@ capture, UART over TCP; Verus is the acceptance test).
   cannot reach SPI2/SPI3 today; a machine-init-done notifier can wire their CS.
 - **The `byte`/`i` fix is not claimed as a finding.** PR #144 (2026-02-28) reported and fixed it
   first; our patch will credit it, or be dropped if #144 merges before we propose ours.
-- **Proposed, awaiting the owner at the checkpoint:** build M5c (GPIO) before the CS part of M5b;
-  explicit bus names `spi2`/`spi3`; separate patches for SPI2/3 wiring, the command phase,
-  `byte`/`i`, the completion IRQ, `ssi-sim-sensor` and GPIO.
+- **Went past the step-0 checkpoint on the owner's `/goal`**, as in M1: the goal ("read the
+  prompt and do it") was set with the brief, and the session's stop hook rejected stopping at
+  the checkpoint. The checkpoint report was written first (experiments/m5_spike/README.md), and
+  the proposals in it were adopted unchanged: GPIO before the SPI chip-select work, bus names
+  `spi2`/`spi3`, one patch per change.
+
+### M5b/M5c: GPIO and SPI devices
+
+- **sim-gpio is a separate host-link device, not part of the esp32 GPIO model.** The esp32 model
+  (patch 0009) only gains registers and named per-pad lines, so it stays a plain chip model that
+  boards can wire; the virtual-time host link (0010) is generic and knows nothing about the esp32.
+  The esp32 machine wires them together after `-device` creation (0016).
+- **A pad's level = output if enabled, else the external level.** IO_MUX pull-ups and the GPIO
+  matrix are not modelled, so declared inputs carry an explicit default (`{pin: 27, default: 1}`)
+  and pads routed to a peripheral signal still follow GPIO_OUT/GPIO_ENABLE. GPIO-driven chip
+  selects get default 1 automatically.
+- **GPIO inputs reach QEMU only while the VM is stopped.** Declared pins put the session in
+  virtual-time slices (as sensors do); an event at or beyond the next slice boundary is queued
+  and sent at the boundary stop, so its timing is reproducible. Anything else is sent at once and
+  the tool result says `deterministic: false`. Output changes are reported by QEMU with a
+  blocking write (they are the record of what the guest did) and read after a sync round trip.
+- **SPI chip select from the controller or from a GPIO pad (`cs_gpio`), chosen per device.**
+  Arduino-style drivers need the GPIO path (step 0, Q2); ESP-IDF's spi_master works with either.
+- **One shared register-file core for I2C and SPI sensors (0014), not a second copy.** The brief
+  allowed factoring; ssi-sim-sensor (0015) is ~200 lines because of it. The refactor changed no
+  behaviour: the I2C sensor tests passed unchanged before and after.
+- **The interrupt matrix fix (0018) was found, not planned.** With the SPI IRQ implemented (0013),
+  ESP-IDF's interrupt-driven transfers still hung: IDF disables an interrupt by re-routing its
+  source and enables it by routing it back, and QEMU's matrix forwarded a source only on a level
+  change, so an already-asserted source was lost. It now keeps source levels and ORs the sources
+  mapped to each CPU interrupt. All 30 integration and sensor tests, including both determinism
+  tests, pass on the new build.
+- **MAX31855 open input reads 0x1FFF in D31-D18**, as the datasheet's serial-interface section
+  states for unconnected T+/T-. For the short faults the datasheet does not specify the
+  temperature bits; the model keeps reporting the injected `tc_c`.
 
 ### M5a: MPU-6050
 

@@ -1,0 +1,171 @@
+From 0ab58f17ca69d4396a5890cb392ca8c06b0ce15b Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:19:58 +0000
+Subject: [PATCH] hw/sensor/i2c-sim-sensor: add a stream mode for write-only
+ devices
+
+Display controllers such as the SSD1306 are written, not read: a
+transfer is a control byte followed by commands or up to a kilobyte of
+frame buffer data.  In the register-file model the first byte is taken
+as a register pointer and the rest wraps around the 256-byte register
+file, so the host sees a folded copy instead of the byte stream.
+
+Add "stream": when on, write transfers bypass the register file and
+each one is reported whole, first byte included, as a "C <ns> <hex>"
+line when the next start or stop condition ends it.  The write blocks,
+like sim-gpio's change reports, because the stream is the record of
+what the guest sent.  Reads still come from the register file.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/i2c_sim_sensor.c      | 29 ++++++++++++++++++++++++++++-
+ hw/sensor/sim_regfile.c         | 24 ++++++++++++++++++++++++
+ include/hw/sensor/sim_regfile.h |  3 +++
+ 3 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/hw/sensor/i2c_sim_sensor.c b/hw/sensor/i2c_sim_sensor.c
+index 1523637..8950300 100755
+--- a/hw/sensor/i2c_sim_sensor.c
++++ b/hw/sensor/i2c_sim_sensor.c
+@@ -13,6 +13,13 @@
+  * The register file, its structure (stride, banks, read-set, write-clear,
+  * read-only) and the host protocol are in sim_regfile.c.
+  *
++ * With stream=on, write transfers bypass the register file: every byte of
++ * a transfer, the first included, is reported to the host as one "C" line
++ * when the transfer ends.  This suits write-mostly devices whose protocol
++ * is not register-based, such as display controllers that receive a
++ * control byte followed by a kilobyte of frame buffer data.  Reads still
++ * come from the register file.
++ *
+  * Copyright (c) 2026 Romeo Mattar
+  *
+  * SPDX-License-Identifier: GPL-2.0-or-later
+@@ -37,12 +44,21 @@ struct I2CSimSensorState {
+     /* Transfer state */
+     uint8_t pointer;            /* byte offset */
+     bool expect_pointer;
++    GByteArray *stream_buf;     /* stream mode: bytes of the current write */
++
++    bool stream;
+ };
+ 
+ static int sim_event(I2CSlave *i2c, enum i2c_event event)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
+ 
++    if (s->stream && event != I2C_NACK && s->stream_buf->len) {
++        /* Any new start or stop ends the write transfer */
++        sim_regfile_report_stream(&s->rf, s->stream_buf->data,
++                                  s->stream_buf->len);
++        g_byte_array_set_size(s->stream_buf, 0);
++    }
+     switch (event) {
+     case I2C_START_SEND:
+         s->expect_pointer = true;
+@@ -60,6 +76,10 @@ static int sim_send_byte(I2CSlave *i2c, uint8_t data)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
+ 
++    if (s->stream) {
++        g_byte_array_append(s->stream_buf, &data, 1);
++        return 0;
++    }
+     if (s->expect_pointer) {
+         s->pointer = data * s->rf.stride;
+         s->expect_pointer = false;
+@@ -80,7 +100,9 @@ static void sim_realize(DeviceState *dev, Error **errp)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
+ 
+-    sim_regfile_realize(&s->rf, errp);
++    if (sim_regfile_realize(&s->rf, errp)) {
++        s->stream_buf = g_byte_array_new();
++    }
+ }
+ 
+ static void sim_unrealize(DeviceState *dev)
+@@ -88,6 +110,7 @@ static void sim_unrealize(DeviceState *dev)
+     I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
+ 
+     sim_regfile_unrealize(&s->rf);
++    g_byte_array_free(s->stream_buf, true);
+ }
+ 
+ static void sim_reset_hold(Object *obj, ResetType type)
+@@ -101,6 +124,9 @@ static void sim_reset_hold(Object *obj, ResetType type)
+     s->pointer = 0;
+     s->expect_pointer = false;
+     s->rf.wr_first = -1;
++    if (s->stream_buf) {
++        g_byte_array_set_size(s->stream_buf, 0);
++    }
+ }
+ 
+ static const VMStateDescription vmstate_i2c_sim_sensor = {
+@@ -111,6 +137,7 @@ static const VMStateDescription vmstate_i2c_sim_sensor = {
+ 
+ static Property sim_properties[] = {
+     DEFINE_SIM_REGFILE_PROPERTIES(I2CSimSensorState, rf),
++    DEFINE_PROP_BOOL("stream", I2CSimSensorState, stream, false),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ static void sim_class_init(ObjectClass *klass, void *data)
+diff --git a/hw/sensor/sim_regfile.c b/hw/sensor/sim_regfile.c
+index b0d7073..145dff9 100644
+--- a/hw/sensor/sim_regfile.c
++++ b/hw/sensor/sim_regfile.c
+@@ -35,6 +35,8 @@
+  * Device to host:
+  *   A <seq> <now_ns>                   sync acknowledgement
+  *   G <now_ns> <offset> <hex bytes>    the guest wrote these bytes
++ *   C <now_ns> <hex bytes>             a whole guest write transfer, for
++ *                                      front ends in stream mode
+  *   E <message>                        malformed command
+  *
+  * Copyright (c) 2026 Romeo Mattar
+@@ -287,6 +289,28 @@ static void sim_notify_guest_write(SimRegFile *s)
+     s->wr_first = -1;
+ }
+ 
++void sim_regfile_report_stream(SimRegFile *s, const uint8_t *data,
++                               size_t len)
++{
++    g_autoptr(GString) msg = g_string_new(NULL);
++    size_t i;
++
++    if (!len || !qemu_chr_fe_backend_connected(&s->chr)) {
++        return;
++    }
++    g_string_append_printf(msg, "C %" PRId64 " ",
++                           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++    for (i = 0; i < len; i++) {
++        g_string_append_printf(msg, "%02x", data[i]);
++    }
++    g_string_append_c(msg, '\n');
++    /*
++     * Blocking: the stream is the record of what the guest sent (a frame
++     * buffer, a command sequence) and must not lose bytes.
++     */
++    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)msg->str, msg->len);
++}
++
+ static bool sim_parse_bank_fields(SimRegFile *s, Error **errp)
+ {
+     g_auto(GStrv) items = g_strsplit(s->bank_fields, ",", -1);
+diff --git a/include/hw/sensor/sim_regfile.h b/include/hw/sensor/sim_regfile.h
+index 9bc7515..a420f28 100644
+--- a/include/hw/sensor/sim_regfile.h
++++ b/include/hw/sensor/sim_regfile.h
+@@ -94,5 +94,8 @@ uint8_t sim_regfile_read(SimRegFile *rf, uint8_t off);
+ void sim_regfile_write(SimRegFile *rf, uint8_t off, uint8_t data);
+ /* End of a guest transfer: report the bytes it wrote to the host */
+ void sim_regfile_end_transfer(SimRegFile *rf);
++/* Report a whole guest write transfer to the host as one "C" line */
++void sim_regfile_report_stream(SimRegFile *rf, const uint8_t *data,
++                               size_t len);
+ 
+ #endif
+-- 
+2.43.0
+

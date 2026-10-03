@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from .sensors.gpio import GpioBank, GpioSpecError, check_pad
 from .targets import TARGETS
 
 DEFAULT_FAIL_ON = [
@@ -23,7 +24,8 @@ DEFAULT_FAIL_ON = [
     r"CORRUPT HEAP",
 ]
 
-ACTIONS = ("expect", "expect_not", "write", "run_for_ms", "sensor_set", "sensor_stream")
+ACTIONS = ("expect", "expect_not", "write", "run_for_ms", "sensor_set", "sensor_stream",
+           "gpio_set", "gpio_pulse", "expect_gpio", "expect_display")
 
 
 class ScenarioError(ValueError):
@@ -40,6 +42,64 @@ class EmulatorConfig(_Strict):
     reboot: bool = False
     watchdogs: bool = True
     qemu_args: list[str] = []
+    uart_tcp_port: int | None = Field(None, ge=1, le=65535)
+
+
+def _pad(v: int) -> int:
+    try:
+        return check_pad(v)
+    except GpioSpecError as e:
+        raise ValueError(str(e)) from None
+
+
+class GpioSet(_Strict):
+    pin: int
+    level: int = Field(ge=0, le=1)
+    at_ms: float | None = Field(None, ge=0)
+    _pin = field_validator("pin")(classmethod(lambda cls, v: _pad(v)))
+
+
+class GpioPulse(_Strict):
+    pin: int
+    width_ms: float = Field(gt=0)
+    at_ms: float | None = Field(None, ge=0)
+    level: int | None = Field(None, ge=0, le=1)
+    _pin = field_validator("pin")(classmethod(lambda cls, v: _pad(v)))
+
+
+class ExpectGpio(_Strict):
+    """Run exactly within_ms of virtual time, then check the pad over that window."""
+    pin: int
+    within_ms: float = Field(gt=0)
+    level: int | None = Field(None, ge=0, le=1)       # level at the end of the window
+    min_edges: int | None = Field(None, ge=0)
+    max_edges: int | None = Field(None, ge=0)
+    freq_hz: tuple[float, float] | None = None        # from the rising edges in the window
+    _pin = field_validator("pin")(classmethod(lambda cls, v: _pad(v)))
+
+    @model_validator(mode="after")
+    def _something_to_check(self):
+        if self.level is None and self.min_edges is None and self.max_edges is None and self.freq_hz is None:
+            raise ValueError("expect_gpio needs at least one of level, min_edges, max_edges, freq_hz")
+        return self
+
+
+class ExpectDisplay(_Strict):
+    """Wait until text read off an ssd1306 contains a substring or matches a regex."""
+    sensor: str
+    contains: str | None = None
+    regex: str | None = None
+
+    @model_validator(mode="after")
+    def _one(self):
+        if (self.contains is None) == (self.regex is None):
+            raise ValueError("expect_display needs exactly one of contains, regex")
+        if self.regex is not None:
+            try:
+                re.compile(self.regex)
+            except re.error as e:
+                raise ValueError(f"invalid regex {self.regex!r}: {e}") from None
+        return self
 
 
 class Step(_Strict):
@@ -50,6 +110,10 @@ class Step(_Strict):
     run_for_ms: int | None = Field(None, gt=0)
     sensor_set: dict[str, Any] | None = None
     sensor_stream: dict[str, Any] | None = None
+    gpio_set: GpioSet | None = None
+    gpio_pulse: GpioPulse | None = None
+    expect_gpio: ExpectGpio | None = None
+    expect_display: ExpectDisplay | None = None
     timeout_s: float = Field(10.0, gt=0)
     within_s: float = Field(1.0, gt=0)
     value_range: tuple[float, float] | None = None
@@ -84,6 +148,7 @@ class Scenario(_Strict):
     timeout_s: float = Field(120.0, gt=0)
     emulator: EmulatorConfig = EmulatorConfig()
     sensors: list[dict[str, Any]] = []
+    gpio: list[dict[str, Any]] = []
     fail_on: list[str] = DEFAULT_FAIL_ON
     steps: list[Step] = Field(min_length=1)
 
@@ -104,11 +169,22 @@ class Scenario(_Strict):
                 raise ValueError(f"invalid regex {rx!r}: {e}") from None
         return v
 
+    @field_validator("gpio")
+    @classmethod
+    def _gpio(cls, v):
+        try:
+            GpioBank(v)
+        except GpioSpecError as e:
+            raise ValueError(str(e)) from None
+        return v
+
     @model_validator(mode="after")
     def _sensors_target(self):
         if self.sensors and not TARGETS[self.target].sensors:
             raise ValueError(f"sensors are supported only on esp32 (the only chip with an I2C model), "
                              f"not {self.target}")
+        if self.gpio and not TARGETS[self.target].sensors:
+            raise ValueError(f"gpio injection is supported only on esp32, not {self.target}")
         return self
 
 

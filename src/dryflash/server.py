@@ -22,6 +22,7 @@ from .panic import decode_panic_text, make_addr2line_symbolizer
 from .qmp import QmpError
 from .scenario import ScenarioError
 from .sensors.link import LinkError
+from .sensors.gpio import GpioSpecError
 from .sensors.models import SensorSpecError
 from .sensors.waveform import WaveformError
 from .session import SessionConfig, SessionError, SessionManager, SessionNotFound
@@ -43,7 +44,7 @@ Targets: esp32 (full support incl. sensors), esp32c3 and esp32s3 (no sensors). N
 """
 
 _EXPECTED = (SessionError, SessionNotFound, ScenarioError, GdbError, QmpError, UnknownTargetError,
-             SensorSpecError, WaveformError, LinkError,
+             SensorSpecError, GpioSpecError, WaveformError, LinkError,
              ValueError, FileNotFoundError, TimeoutError, asyncio.TimeoutError)
 
 
@@ -102,7 +103,8 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
                         target: str = "esp32", deterministic: bool = False, wait_for_gdb: bool = False,
                         sensors: list[dict[str, Any]] | None = None, reboot: bool = False,
                         watchdogs: bool = True, icount_shift: int = 3,
-                        qemu_args: list[str] | None = None) -> dict[str, Any]:
+                        qemu_args: list[str] | None = None, gpio: list[dict[str, Any]] | None = None,
+                        uart_tcp_port: int | None = None) -> dict[str, Any]:
         """Start an emulator session running the firmware and return its session_id.
 
         Give project_dir (uses its last project_build; builds first if it was never built) or image
@@ -111,10 +113,17 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         wait_for_gdb=true keeps the CPU halted at reset so you can set breakpoints first (then
         gdb_break + gdb_continue). By default a guest reset (panic, watchdog, esp_restart) ends the
         session and keeps the crash at the end of the UART log; reboot=true boot-loops like a board.
-        sensors (esp32, sensors image only) declares injected I2C sensors, e.g.
+        sensors (esp32, sensors image only) declares injected sensors, e.g.
         [{"model": "adxl345", "name": "accel", "address": 83, "waveform": {...}}]; see sensor_set.
-        Common keys: model, name, address, bus (0/1), rate_hz (new samples per virtual second),
-        waveform {channel: spec}. Models: adxl345 (channels x/y/z in g; follows DATA_FORMAT),
+        Common keys: model, name, rate_hz (new samples per virtual second), waveform {channel: spec};
+        I2C chips take address and bus (0/1); SPI chips take bus ("spi2" or "spi3", i.e. SPI2_HOST/
+        SPI3_HOST), cs (controller CS line 0-2) and cs_gpio (a GPIO pad, for drivers that toggle CS
+        themselves, e.g. Arduino libraries; it idles high). SPI firmware must use polling or
+        interrupt transfers without DMA (SPI_DMA_DISABLED): DMA is not emulated and silently
+        returns no data. SPI models: max31855 (tc_c, cj_c in degC, fault none/open/short_gnd/
+        short_vcc; 32-bit frame), max6675 (tc_c, fault none/open; 16-bit frame). Display:
+        ssd1306 (I2C 0x3C/0x3D, no channels; read it with display_snapshot).
+        I2C models: adxl345 (channels x/y/z in g; follows DATA_FORMAT),
         ads1115 (ain0..ain3 in V; follows MUX and PGA), mpu6050 (x/y/z in g, gx/gy/gz in deg/s,
         temp_c; address 0x68 or 0x69; follows ACCEL_CONFIG/GYRO_CONFIG; reads zeros until the
         firmware clears SLEEP in PWR_MGMT_1, like the real chip), and generic, which emulates any
@@ -125,6 +134,13 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         read_set "0x00:0x28" (bits always read as 1, e.g. data-ready flags). Example, a 24-bit
         ADC: {"model": "generic", "name": "adc", "address": 42, "read_set": "0x00:0x28",
         "channels": {"kg": {"offset": 18, "format": "int24_be", "scale": 10000}}}.
+        gpio (sensors image) declares input pads driven from outside, e.g. [{"pin": 27,
+        "default": 1}] for a button to ground with INPUT_PULLUP: pull-ups are not emulated, so a
+        declared pin's default is its idle level. Declared pins make gpio_set/gpio_pulse timing
+        reproducible. Every pad's output changes are traced either way (gpio_trace).
+        uart_tcp_port tees UART0 to a TCP listener inside the container (needs docker run -p N:N):
+        an external program (e.g. pyserial socket://localhost:N) reads the console and its bytes go
+        to the firmware's RX, alongside uart_read/uart_write.
         Next: uart_expect for a boot message, or uart_read with cursor 0.
         """
         t = get_target(target)
@@ -147,12 +163,15 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
             elf_path = _path(elf) if elf else None
         else:
             raise ToolError("give project_dir or image")
-        if sensors and not t.sensors:
-            raise ToolError(f"sensors are supported only on esp32, not {target}")
+        if (sensors or gpio) and not t.sensors:
+            raise ToolError(f"sensors and GPIO injection are supported only on esp32, not {target}")
+        if uart_tcp_port is not None and not 1 <= uart_tcp_port <= 65535:
+            raise ToolError("uart_tcp_port must be a TCP port number (1-65535)")
         s = await mgr.start(SessionConfig(
             target=target, flash_image=flash, elf=elf_path, project_dir=proj, deterministic=deterministic,
             icount_shift=icount_shift, wait_for_gdb=wait_for_gdb, reboot=reboot, watchdogs=watchdogs,
-            extra_args=list(qemu_args or []), sensors=list(sensors or [])))
+            extra_args=list(qemu_args or []), sensors=list(sensors or []), gpio=list(gpio or []),
+            uart_tcp_port=uart_tcp_port))
         return {**s.status(), "built_first": built,
                 "next": "gdb_break then gdb_continue" if wait_for_gdb else "uart_expect or uart_read(cursor=0)"}
 
@@ -413,6 +432,64 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         sum several. Samples are resampled onto the sensor's rate_hz grid in virtual time.
         """
         return await _hub(session_id).stream(sensor, waveform=waveform, at_ms=at_ms)
+
+    # ------------------------------------------------------------------ GPIO and displays (sensors image)
+    def _io_hub(session_id: str):
+        s = mgr.get(session_id)
+        if s.sensors is None or s.sensors.gpio is None:
+            raise ToolError("GPIO injection and tracing need an esp32 session on the dryflash-sensors image")
+        return s.sensors
+
+    @tool
+    async def gpio_set(session_id: str, pin: int, level: int, at_ms: float | None = None) -> dict[str, Any]:
+        """Drive a GPIO pad's external level (0 or 1) from virtual time at_ms (default: now).
+
+        Use it for inputs: buttons, data-ready lines, a sensor's interrupt pin. The level is what
+        the pad reads while the firmware does not drive it as an output. For reproducible timing,
+        declare the pin in emu_start(gpio=[...]) and give at_ms ahead of the current virtual time,
+        or call it while paused; the result says whether delivery was deterministic.
+        Next: uart_expect for the firmware's reaction, or gpio_trace.
+        """
+        return await _io_hub(session_id).gpio_events([(at_ms, pin, level)])
+
+    @tool
+    async def gpio_pulse(session_id: str, pin: int, width_ms: float, at_ms: float | None = None,
+                         level: int | None = None) -> dict[str, Any]:
+        """Pulse a pad away from its idle level for width_ms (a button press), starting at at_ms.
+
+        level is the active level; by default the opposite of the pin's declared default (a button
+        declared {"pin": 27, "default": 1} is pressed by pulling it to 0). Same timing rules as
+        gpio_set. Next: uart_expect or gpio_trace to see the reaction.
+        """
+        return await _io_hub(session_id).gpio_pulse(pin, width_ms, at_ms=at_ms, level=level)
+
+    @tool
+    async def gpio_read(session_id: str, pin: int) -> dict[str, Any]:
+        """Current level of a GPIO pad (driven by the firmware or from outside) and the virtual time."""
+        return await _io_hub(session_id).gpio_read(pin)
+
+    @tool
+    async def gpio_trace(session_id: str, pin: int, cursor: int = 0, max_edges: int = 200) -> dict[str, Any]:
+        """Level changes of a pad with virtual timestamps (t_ms), from edge number `cursor` on.
+
+        Every pad is traced from power-on, so this answers "does the LED blink at 2 Hz": read the
+        edges and their spacing. Returns the next cursor and whether more edges remain.
+        """
+        return await _io_hub(session_id).gpio_trace(pin, cursor=cursor, max_edges=max_edges)
+
+    @tool
+    async def display_snapshot(session_id: str, sensor: str, png: bool = False) -> dict[str, Any]:
+        """What an emulated SSD1306 OLED (declared as a sensor, model ssd1306) shows right now.
+
+        Returns on/off, inverted, contrast, the lit area as text art (half-block characters, two
+        pixel rows per line), and the text read with the Adafruit-GFX classic 5x7 font at sizes
+        1-4 (other fonts are not read; use the art). png=true also writes a PNG under the
+        session directory and returns its path.
+        """
+        s = mgr.get(session_id)
+        hub = _hub(session_id)
+        path = Path(s.run_dir) / f"{sensor}-{s.uart.total}.png" if png else None
+        return await hub.display_snapshot(sensor, path)
 
     return app
 

@@ -1,0 +1,42 @@
+From c548078bc709197c9ad63d042cd566d4a151c4a0 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:09:26 +0000
+Subject: [PATCH] hw/ssi/esp32_spi: bound the tx/rx copy by the byte index
+
+esp32_spi_txrx_buffer() checks "byte < tx_bytes" and "byte < rx_bytes",
+where byte is the data byte being sent, not the loop index.  A received
+byte is dropped whenever the byte sent in its place is >= the receive
+length, so a full-duplex read padded with 0xff (Adafruit's MAX31855
+driver, Arduino SPI.transfer) returns its own transmit data.
+
+Use the loop index.  The same fix, for the esp32, esp32c3 and esp32s3
+models, was first proposed in espressif/qemu pull request #144
+("hw/ssi/esp32_spi: fix RX bounds check and add dummy cycle handling");
+this patch carries only the esp32 part, needed for the tests here.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/ssi/esp32_spi.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index 4d0d12f..dc18faa 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -157,11 +157,11 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int
+     uint8_t *c_buf = (uint8_t*) buf;
+     for (int i = 0; i < bytes; ++i) {
+         uint8_t byte = 0;
+-        if (byte < tx_bytes) {
++        if (i < tx_bytes) {
+             memcpy(&byte, c_buf + i, 1);
+         }
+         uint32_t res = ssi_transfer(s->spi, byte);
+-        if (byte < rx_bytes) {
++        if (i < rx_bytes) {
+             memcpy(c_buf + i, &res, 1);
+         }
+     }
+-- 
+2.43.0
+

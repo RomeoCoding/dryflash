@@ -1,0 +1,23 @@
+name: GPIO and SPI devices end to end
+target: esp32
+timeout_s: 180
+emulator:
+  deterministic: true
+gpio:
+  - {pin: 27, default: 1, name: button}
+sensors:
+  - {model: max31855, name: tc, bus: spi3, cs: 0, waveform: {tc_c: 100.75, cj_c: 25.0, fault: none}}
+  - {model: max6675, name: k, bus: spi2, cs: 0, cs_gpio: 15, waveform: {tc_c: 250.5}}
+steps:
+  - expect: 'io_probe ready, button level 1'
+    timeout_s: 60
+  - expect: 'max31855 polling raw=0x064c1900 tc=100.75 cj=25.0000 fault=0'
+  - expect: 'max31855 interrupt raw=0x064c1900 tc=100.75'
+  - expect: 'max6675 raw=0x1f50 tc=250.50 open=0'
+  - expect_gpio: {pin: 25, within_ms: 2000, freq_hz: [1.95, 2.05], min_edges: 7}
+  - gpio_pulse: {pin: 27, width_ms: 50, at_ms: 4000}
+  - expect: 'button pressed at \d+ ms, level 0'
+    timeout_s: 30
+  - sensor_set: {sensor: tc, values: {fault: open}, at_ms: 5000}
+  - expect: 'max31855 polling raw=0x7ffd1901 tc=2047.75 cj=25.0000 fault=1 oc=1 scg=0 scv=0'
+    timeout_s: 30

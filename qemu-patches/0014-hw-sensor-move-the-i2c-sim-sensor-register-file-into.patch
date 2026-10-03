@@ -1,0 +1,1253 @@
+From 4714de608d1d449697508bf9743de1ea96ad220f Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:14:12 +0000
+Subject: [PATCH] hw/sensor: move the i2c-sim-sensor register file into
+ sim-regfile
+
+The host-fed register file (banks, read-set, write-clear, read-only, the
+virtual-time update queue and the chardev protocol) is not specific to
+I2C: SPI sensors use the same register model behind a different bus
+protocol.  Move it into sim_regfile.c with a small API (realize, read,
+write, end of transfer) and a property-list macro, and leave
+i2c-sim-sensor as the I2C front end: pointer byte, auto-increment and
+reset of the transfer state.
+
+No functional change; the properties and the host protocol are the same.
+
+checkpatch reports DEFINE_SIM_REGFILE_PROPERTIES as a complex macro
+value; it is a property list built the same way as
+DEFINE_NIC_PROPERTIES.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/i2c_sim_sensor.c      | 525 +-------------------------------
+ hw/sensor/meson.build           |   2 +-
+ hw/sensor/sim_regfile.c         | 487 +++++++++++++++++++++++++++++
+ include/hw/sensor/sim_regfile.h |  98 ++++++
+ 4 files changed, 598 insertions(+), 514 deletions(-)
+ create mode 100644 hw/sensor/sim_regfile.c
+ create mode 100644 include/hw/sensor/sim_regfile.h
+
+diff --git a/hw/sensor/i2c_sim_sensor.c b/hw/sensor/i2c_sim_sensor.c
+index 4eb2a66..1523637 100755
+--- a/hw/sensor/i2c_sim_sensor.c
++++ b/hw/sensor/i2c_sim_sensor.c
+@@ -10,33 +10,8 @@
+  * gives the same guest-visible values however fast or slow the host is.
+  * The device never waits for the host.
+  *
+- * Sensor semantics (scaling, ranges, conversions) stay on the host.  The
+- * device only knows enough structure to cover common sensor and ADC chips:
+- *
+- *  - stride: bytes per register address (2 for chips with 16-bit
+- *    registers such as the ADS1115);
+- *  - one bank selector: (bits of a 1- or 2-byte register) >> shift picks
+- *    which bank a range of data registers is read from, e.g. the ADS1115
+- *    MUX and PGA fields select a conversion result.  Alternatively the
+- *    bank number is put together from up to four fields in different
+- *    registers ("bank-fields"), e.g. a sleep bit and the accelerometer and
+- *    gyroscope range fields of an IMU;
+- *  - read-set: bits forced to one when read (status "ready" flags);
+- *  - write-clear: bits the guest may set that always read back as zero
+- *    (self-clearing command bits such as a soft reset);
+- *  - read-only: byte ranges the guest cannot write (IDs, status).
+- *
+- * Host to device, one command per line:
+- *   W <virtual_ns> <bank> <offset> <hex bytes>
+- *       write up to 32 bytes at byte offset <offset> of the register file
+- *       (bank -1) or of data bank <bank>, at virtual time <virtual_ns>.
+- *       Times in the past (including 0) apply immediately.
+- *   S <seq>
+- *       reply "A <seq> <now_ns>" once all earlier lines are processed.
+- * Device to host:
+- *   A <seq> <now_ns>                   sync acknowledgement
+- *   G <now_ns> <offset> <hex bytes>    the guest wrote these bytes
+- *   E <message>                        malformed command
++ * The register file, its structure (stride, banks, read-set, write-clear,
++ * read-only) and the host protocol are in sim_regfile.c.
+  *
+  * Copyright (c) 2026 Romeo Mattar
+  *
+@@ -44,315 +19,26 @@
+  */
+ 
+ #include "qemu/osdep.h"
+-#include "qemu/cutils.h"
+-#include "qemu/host-utils.h"
+-#include "qemu/timer.h"
+ #include "qemu/module.h"
+ #include "qapi/error.h"
+ #include "hw/i2c/i2c.h"
+-#include "hw/qdev-properties.h"
+-#include "hw/qdev-properties-system.h"
+-#include "chardev/char-fe.h"
++#include "hw/sensor/sim_regfile.h"
+ #include "migration/vmstate.h"
+ #include "qom/object.h"
+ 
+ #define TYPE_I2C_SIM_SENSOR "i2c-sim-sensor"
+ OBJECT_DECLARE_SIMPLE_TYPE(I2CSimSensorState, I2C_SIM_SENSOR)
+ 
+-#define SIM_REGS            256
+-#define SIM_MAX_BANKS       64
+-#define SIM_MAX_UPDATE      32
+-#define SIM_LINE_MAX        512
+-#define SIM_MAX_MASKS       8
+-#define SIM_MAX_FIELDS      4
+-#define SIM_MAX_PENDING     (1 << 20)
+-
+-typedef struct SimUpdate {
+-    int64_t when_ns;
+-    int bank;                   /* -1: register file */
+-    uint8_t offset;
+-    uint8_t len;
+-    uint8_t data[SIM_MAX_UPDATE];
+-} SimUpdate;
+-
+ struct I2CSimSensorState {
+     I2CSlave parent_obj;
+ 
+-    CharBackend chr;
+-    QEMUTimer *timer;
+-    GQueue pending;             /* SimUpdate *, sorted by when_ns */
+-
+-    uint8_t regs[SIM_REGS];
+-    uint8_t *banks;             /* nbanks * bank_size bytes */
+-    unsigned nbanks;
+-    unsigned bank_size;
+-
+-    /* bank-fields: field i supplies bank number bits [pos, pos + width) */
+-    uint8_t field_off[SIM_MAX_FIELDS];
+-    uint8_t field_mask[SIM_MAX_FIELDS];
+-    uint8_t field_shift[SIM_MAX_FIELDS];
+-    uint8_t field_pos[SIM_MAX_FIELDS];
+-    unsigned n_fields;
+-
+-    uint8_t read_set_off[SIM_MAX_MASKS];
+-    uint8_t read_set_mask[SIM_MAX_MASKS];
+-    unsigned n_read_set;
+-    uint8_t write_clear_off[SIM_MAX_MASKS];
+-    uint8_t write_clear_mask[SIM_MAX_MASKS];
+-    unsigned n_write_clear;
+-    bool read_only[SIM_REGS];
++    SimRegFile rf;
+ 
+     /* Transfer state */
+     uint8_t pointer;            /* byte offset */
+     bool expect_pointer;
+-    int wr_first;               /* guest-written range, -1: none */
+-    int wr_last;
+-
+-    char line[SIM_LINE_MAX];
+-    unsigned line_len;
+-    bool line_overflow;
+-
+-    /* Properties */
+-    uint8_t stride;
+-    uint8_t bank_reg;
+-    uint8_t bank_width;
+-    uint16_t bank_mask;
+-    uint8_t bank_shift;
+-    uint8_t bank_first;
+-    uint8_t bank_last;
+-    char *bank_fields;
+-    char *read_set;
+-    char *write_clear;
+-    char *read_only_str;
+ };
+ 
+-static void sim_send(I2CSimSensorState *s, const char *fmt, ...)
+-    G_GNUC_PRINTF(2, 3);
+-
+-static void sim_send(I2CSimSensorState *s, const char *fmt, ...)
+-{
+-    g_autofree char *msg = NULL;
+-    va_list ap;
+-
+-    if (!qemu_chr_fe_backend_connected(&s->chr)) {
+-        return;
+-    }
+-    va_start(ap, fmt);
+-    msg = g_strdup_vprintf(fmt, ap);
+-    va_end(ap);
+-    /* Non-blocking: a host that stops reading loses notices, QEMU runs on */
+-    qemu_chr_fe_write(&s->chr, (const uint8_t *)msg, strlen(msg));
+-}
+-
+-static unsigned sim_current_bank(I2CSimSensorState *s)
+-{
+-    uint16_t sel = s->regs[s->bank_reg];
+-    unsigned i, bank = 0;
+-
+-    if (s->n_fields) {
+-        for (i = 0; i < s->n_fields; i++) {
+-            bank |= ((s->regs[s->field_off[i]] & s->field_mask[i]) >>
+-                     s->field_shift[i]) << s->field_pos[i];
+-        }
+-        return bank;
+-    }
+-    if (s->bank_width == 2) {
+-        sel = (sel << 8) | s->regs[(uint8_t)(s->bank_reg + 1)];
+-    }
+-    return ((sel & s->bank_mask) >> s->bank_shift) % s->nbanks;
+-}
+-
+-static bool sim_is_banked(I2CSimSensorState *s, uint8_t off)
+-{
+-    return s->nbanks && off >= s->bank_first && off <= s->bank_last;
+-}
+-
+-static uint8_t sim_read_byte(I2CSimSensorState *s, uint8_t off)
+-{
+-    uint8_t v;
+-    unsigned i;
+-
+-    if (sim_is_banked(s, off)) {
+-        v = s->banks[sim_current_bank(s) * s->bank_size + off - s->bank_first];
+-    } else {
+-        v = s->regs[off];
+-    }
+-    for (i = 0; i < s->n_read_set; i++) {
+-        if (s->read_set_off[i] == off) {
+-            v |= s->read_set_mask[i];
+-        }
+-    }
+-    return v;
+-}
+-
+-static void sim_apply(I2CSimSensorState *s, const SimUpdate *u)
+-{
+-    unsigned i;
+-
+-    for (i = 0; i < u->len; i++) {
+-        uint8_t off = u->offset + i;
+-
+-        if (u->bank < 0) {
+-            s->regs[off] = u->data[i];
+-        } else if (sim_is_banked(s, off)) {
+-            s->banks[u->bank * s->bank_size + off - s->bank_first] = u->data[i];
+-        }
+-    }
+-}
+-
+-static void sim_rearm(I2CSimSensorState *s)
+-{
+-    SimUpdate *head = g_queue_peek_head(&s->pending);
+-
+-    if (head) {
+-        timer_mod(s->timer, head->when_ns);
+-    } else {
+-        timer_del(s->timer);
+-    }
+-}
+-
+-static void sim_timer_cb(void *opaque)
+-{
+-    I2CSimSensorState *s = opaque;
+-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+-    SimUpdate *u;
+-
+-    while ((u = g_queue_peek_head(&s->pending)) && u->when_ns <= now) {
+-        sim_apply(s, g_queue_pop_head(&s->pending));
+-        g_free(u);
+-    }
+-    sim_rearm(s);
+-}
+-
+-static gint sim_update_cmp(gconstpointer a, gconstpointer b, gpointer opaque)
+-{
+-    const SimUpdate *ua = a, *ub = b;
+-
+-    /* Equal timestamps keep arrival order (g_queue_insert_sorted is stable) */
+-    return ua->when_ns < ub->when_ns ? -1 : ua->when_ns > ub->when_ns;
+-}
+-
+-static void sim_queue(I2CSimSensorState *s, SimUpdate *u)
+-{
+-    SimUpdate *tail = g_queue_peek_tail(&s->pending);
+-
+-    /* Hosts normally send in time order, which makes this an append */
+-    if (!tail || tail->when_ns <= u->when_ns) {
+-        g_queue_push_tail(&s->pending, u);
+-    } else {
+-        g_queue_insert_sorted(&s->pending, u, sim_update_cmp, NULL);
+-    }
+-    sim_rearm(s);
+-}
+-
+-static int sim_parse_hex(const char *hex, uint8_t *out, unsigned max)
+-{
+-    size_t n = strlen(hex);
+-    unsigned i;
+-
+-    if (n == 0 || n % 2 || n / 2 > max) {
+-        return -1;
+-    }
+-    for (i = 0; i < n / 2; i++) {
+-        int hi = g_ascii_xdigit_value(hex[2 * i]);
+-        int lo = g_ascii_xdigit_value(hex[2 * i + 1]);
+-
+-        if (hi < 0 || lo < 0) {
+-            return -1;
+-        }
+-        out[i] = hi << 4 | lo;
+-    }
+-    return n / 2;
+-}
+-
+-static void sim_command(I2CSimSensorState *s, char *line)
+-{
+-    g_auto(GStrv) f = g_strsplit_set(g_strstrip(line), " \t", -1);
+-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+-    guint n = g_strv_length(f);
+-
+-    if (n == 0 || !f[0][0]) {
+-        return;
+-    }
+-    if (!strcmp(f[0], "S") && n == 2) {
+-        sim_send(s, "A %s %" PRId64 "\n", f[1], now);
+-    } else if (!strcmp(f[0], "W") && n == 5) {
+-        g_autofree SimUpdate *u = g_new0(SimUpdate, 1);
+-        int64_t bank, off;
+-        int len;
+-
+-        len = sim_parse_hex(f[4], u->data, SIM_MAX_UPDATE);
+-        if (qemu_strtoi64(f[1], NULL, 10, &u->when_ns) ||
+-            qemu_strtoi64(f[2], NULL, 10, &bank) ||
+-            qemu_strtoi64(f[3], NULL, 0, &off) ||
+-            bank < -1 || bank >= (int64_t)s->nbanks ||
+-            off < 0 || off >= SIM_REGS || len < 0) {
+-            sim_send(s, "E bad W command\n");
+-            return;
+-        }
+-        u->bank = bank;
+-        u->offset = off;
+-        u->len = len;
+-        if (u->when_ns <= now) {
+-            sim_apply(s, u);
+-        } else if (g_queue_get_length(&s->pending) >= SIM_MAX_PENDING) {
+-            sim_send(s, "E update queue full\n");
+-        } else {
+-            sim_queue(s, g_steal_pointer(&u));
+-        }
+-    } else {
+-        sim_send(s, "E unknown command\n");
+-    }
+-}
+-
+-static int sim_can_receive(void *opaque)
+-{
+-    I2CSimSensorState *s = opaque;
+-
+-    return SIM_LINE_MAX - s->line_len;
+-}
+-
+-static void sim_receive(void *opaque, const uint8_t *buf, int size)
+-{
+-    I2CSimSensorState *s = opaque;
+-    int i;
+-
+-    for (i = 0; i < size; i++) {
+-        if (buf[i] == '\n') {
+-            s->line[s->line_len] = '\0';
+-            if (s->line_overflow) {
+-                sim_send(s, "E line too long\n");
+-            } else {
+-                sim_command(s, s->line);
+-            }
+-            s->line_len = 0;
+-            s->line_overflow = false;
+-        } else if (s->line_len < SIM_LINE_MAX - 1) {
+-            s->line[s->line_len++] = buf[i];
+-        } else {
+-            s->line_overflow = true;
+-        }
+-    }
+-}
+-
+-static void sim_notify_guest_write(I2CSimSensorState *s)
+-{
+-    GString *hex;
+-    int i;
+-
+-    if (s->wr_first < 0) {
+-        return;
+-    }
+-    hex = g_string_new(NULL);
+-    for (i = s->wr_first; i <= s->wr_last; i++) {
+-        g_string_append_printf(hex, "%02x", s->regs[i]);
+-    }
+-    sim_send(s, "G %" PRId64 " %d %s\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+-             s->wr_first, hex->str);
+-    g_string_free(hex, true);
+-    s->wr_first = -1;
+-}
+-
+ static int sim_event(I2CSlave *i2c, enum i2c_event event)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
+@@ -362,7 +48,7 @@ static int sim_event(I2CSlave *i2c, enum i2c_event event)
+         s->expect_pointer = true;
+         break;
+     case I2C_FINISH:
+-        sim_notify_guest_write(s);
++        sim_regfile_end_transfer(&s->rf);
+         break;
+     default:
+         break;
+@@ -375,27 +61,11 @@ static int sim_send_byte(I2CSlave *i2c, uint8_t data)
+     I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
+ 
+     if (s->expect_pointer) {
+-        s->pointer = data * s->stride;
++        s->pointer = data * s->rf.stride;
+         s->expect_pointer = false;
+         return 0;
+     }
+-    if (!s->read_only[s->pointer] && !sim_is_banked(s, s->pointer)) {
+-        unsigned i;
+-
+-        for (i = 0; i < s->n_write_clear; i++) {
+-            if (s->write_clear_off[i] == s->pointer) {
+-                data &= ~s->write_clear_mask[i];
+-            }
+-        }
+-        s->regs[s->pointer] = data;
+-        if (s->wr_first < 0) {
+-            s->wr_first = s->wr_last = s->pointer;
+-        } else {
+-            s->wr_first = MIN(s->wr_first, s->pointer);
+-            s->wr_last = MAX(s->wr_last, s->pointer);
+-        }
+-    }
+-    s->pointer++;
++    sim_regfile_write(&s->rf, s->pointer++, data);
+     return 0;
+ }
+ 
+@@ -403,180 +73,21 @@ static uint8_t sim_recv_byte(I2CSlave *i2c)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(i2c);
+ 
+-    return sim_read_byte(s, s->pointer++);
+-}
+-
+-static bool sim_parse_bank_fields(I2CSimSensorState *s, Error **errp)
+-{
+-    g_auto(GStrv) items = g_strsplit(s->bank_fields, ",", -1);
+-    unsigned pos = 0;
+-    guint i;
+-
+-    for (i = 0; items[i]; i++) {
+-        uint64_t off, mask;
+-        char *colon = strchr(items[i], ':');
+-
+-        if (i >= SIM_MAX_FIELDS || !colon) {
+-            error_setg(errp, "bank-fields: expected up to %d 'offset:mask' "
+-                       "items", SIM_MAX_FIELDS);
+-            return false;
+-        }
+-        *colon = '\0';
+-        if (qemu_strtou64(items[i], NULL, 0, &off) ||
+-            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
+-            off >= SIM_REGS || !mask || mask > 0xff) {
+-            error_setg(errp, "bank-fields: bad item '%s'", items[i]);
+-            return false;
+-        }
+-        s->field_off[i] = off;
+-        s->field_mask[i] = mask;
+-        s->field_shift[i] = ctz32(mask);
+-        s->field_pos[i] = pos;
+-        /* The first item supplies the least significant bank number bits */
+-        pos += 32 - clz32(mask >> ctz32(mask));
+-        s->n_fields = i + 1;
+-    }
+-    if (pos > 6) {
+-        error_setg(errp, "bank-fields select among 2^%u banks, at most %d",
+-                   pos, SIM_MAX_BANKS);
+-        return false;
+-    }
+-    s->nbanks = 1u << pos;
+-    return true;
+-}
+-
+-/* Parse a list of "offset:mask" items, as used by read-set and write-clear */
+-static bool sim_parse_masks(const char *prop, const char *str, uint8_t *offs,
+-                            uint8_t *masks, unsigned *n, Error **errp)
+-{
+-    g_auto(GStrv) items = NULL;
+-    guint i;
+-
+-    if (!str || !*str) {
+-        return true;
+-    }
+-    items = g_strsplit(str, ",", -1);
+-    for (i = 0; items[i]; i++) {
+-        uint64_t off, mask;
+-        char *colon = strchr(items[i], ':');
+-
+-        if (i >= SIM_MAX_MASKS || !colon) {
+-            error_setg(errp, "%s: expected up to %d 'offset:mask' items",
+-                       prop, SIM_MAX_MASKS);
+-            return false;
+-        }
+-        *colon = '\0';
+-        if (qemu_strtou64(items[i], NULL, 0, &off) ||
+-            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
+-            off >= SIM_REGS || mask > 0xff) {
+-            error_setg(errp, "%s: bad item '%s'", prop, items[i]);
+-            return false;
+-        }
+-        offs[i] = off;
+-        masks[i] = mask;
+-        *n = i + 1;
+-    }
+-    return true;
+-}
+-
+-static bool sim_parse_read_only(I2CSimSensorState *s, Error **errp)
+-{
+-    g_auto(GStrv) items = NULL;
+-    guint i;
+-
+-    if (!s->read_only_str || !*s->read_only_str) {
+-        return true;
+-    }
+-    items = g_strsplit(s->read_only_str, ",", -1);
+-    for (i = 0; items[i]; i++) {
+-        uint64_t first, last;
+-        char *dash = strchr(items[i], '-');
+-
+-        if (dash) {
+-            *dash = '\0';
+-        }
+-        if (qemu_strtou64(items[i], NULL, 0, &first) ||
+-            (dash && qemu_strtou64(dash + 1, NULL, 0, &last))) {
+-            error_setg(errp, "read-only: bad range '%s'", items[i]);
+-            return false;
+-        }
+-        if (!dash) {
+-            last = first;
+-        }
+-        if (first > last || last >= SIM_REGS) {
+-            error_setg(errp, "read-only: range out of bounds");
+-            return false;
+-        }
+-        while (first <= last) {
+-            s->read_only[first++] = true;
+-        }
+-    }
+-    return true;
++    return sim_regfile_read(&s->rf, s->pointer++);
+ }
+ 
+ static void sim_realize(DeviceState *dev, Error **errp)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
+ 
+-    if (s->stride == 0) {
+-        error_setg(errp, "stride must be at least 1");
+-        return;
+-    }
+-    if (s->bank_width > 2) {
+-        error_setg(errp, "bank-width must be 0 (no banking), 1 or 2");
+-        return;
+-    }
+-    if (s->bank_fields && *s->bank_fields) {
+-        if (s->bank_width) {
+-            error_setg(errp, "bank-fields replaces bank-reg, bank-width, "
+-                       "bank-mask and bank-shift; give one or the other");
+-            return;
+-        }
+-        if (!sim_parse_bank_fields(s, errp)) {
+-            return;
+-        }
+-    } else if (s->bank_width) {
+-        if (!s->bank_mask) {
+-            error_setg(errp, "banking needs bank-mask");
+-            return;
+-        }
+-        s->nbanks = (s->bank_mask >> s->bank_shift) + 1;
+-        if (s->nbanks > SIM_MAX_BANKS) {
+-            error_setg(errp, "bank selector allows %u banks, at most %d",
+-                       s->nbanks, SIM_MAX_BANKS);
+-            return;
+-        }
+-    }
+-    if (s->nbanks) {
+-        if (s->bank_first > s->bank_last) {
+-            error_setg(errp, "banking needs bank-first <= bank-last");
+-            return;
+-        }
+-        s->bank_size = s->bank_last - s->bank_first + 1;
+-        s->banks = g_malloc0(s->nbanks * s->bank_size);
+-    }
+-    if (!sim_parse_masks("read-set", s->read_set, s->read_set_off,
+-                         s->read_set_mask, &s->n_read_set, errp) ||
+-        !sim_parse_masks("write-clear", s->write_clear, s->write_clear_off,
+-                         s->write_clear_mask, &s->n_write_clear, errp) ||
+-        !sim_parse_read_only(s, errp)) {
+-        return;
+-    }
+-    g_queue_init(&s->pending);
+-    s->wr_first = -1;
+-    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sim_timer_cb, s);
+-    qemu_chr_fe_set_handlers(&s->chr, sim_can_receive, sim_receive, NULL,
+-                             NULL, s, NULL, true);
++    sim_regfile_realize(&s->rf, errp);
+ }
+ 
+ static void sim_unrealize(DeviceState *dev)
+ {
+     I2CSimSensorState *s = I2C_SIM_SENSOR(dev);
+ 
+-    qemu_chr_fe_deinit(&s->chr, false);
+-    timer_free(s->timer);
+-    g_queue_clear_full(&s->pending, g_free);
+-    g_free(s->banks);
++    sim_regfile_unrealize(&s->rf);
+ }
+ 
+ static void sim_reset_hold(Object *obj, ResetType type)
+@@ -589,7 +100,7 @@ static void sim_reset_hold(Object *obj, ResetType type)
+      */
+     s->pointer = 0;
+     s->expect_pointer = false;
+-    s->wr_first = -1;
++    s->rf.wr_first = -1;
+ }
+ 
+ static const VMStateDescription vmstate_i2c_sim_sensor = {
+@@ -599,21 +110,9 @@ static const VMStateDescription vmstate_i2c_sim_sensor = {
+ };
+ 
+ static Property sim_properties[] = {
+-    DEFINE_PROP_CHR("chardev", I2CSimSensorState, chr),
+-    DEFINE_PROP_UINT8("stride", I2CSimSensorState, stride, 1),
+-    DEFINE_PROP_UINT8("bank-reg", I2CSimSensorState, bank_reg, 0),
+-    DEFINE_PROP_UINT8("bank-width", I2CSimSensorState, bank_width, 0),
+-    DEFINE_PROP_UINT16("bank-mask", I2CSimSensorState, bank_mask, 0),
+-    DEFINE_PROP_UINT8("bank-shift", I2CSimSensorState, bank_shift, 0),
+-    DEFINE_PROP_UINT8("bank-first", I2CSimSensorState, bank_first, 0),
+-    DEFINE_PROP_UINT8("bank-last", I2CSimSensorState, bank_last, 0),
+-    DEFINE_PROP_STRING("bank-fields", I2CSimSensorState, bank_fields),
+-    DEFINE_PROP_STRING("read-set", I2CSimSensorState, read_set),
+-    DEFINE_PROP_STRING("write-clear", I2CSimSensorState, write_clear),
+-    DEFINE_PROP_STRING("read-only", I2CSimSensorState, read_only_str),
++    DEFINE_SIM_REGFILE_PROPERTIES(I2CSimSensorState, rf),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+-
+ static void sim_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+diff --git a/hw/sensor/meson.build b/hw/sensor/meson.build
+index cf6260e..e3ab5ee 100644
+--- a/hw/sensor/meson.build
++++ b/hw/sensor/meson.build
+@@ -8,4 +8,4 @@ system_ss.add(when: 'CONFIG_MAX34451', if_true: files('max34451.c'))
+ system_ss.add(when: 'CONFIG_LSM303DLHC_MAG', if_true: files('lsm303dlhc_mag.c'))
+ system_ss.add(when: 'CONFIG_ISL_PMBUS_VR', if_true: files('isl_pmbus_vr.c'))
+ system_ss.add(when: 'CONFIG_MAX31785', if_true: files('max31785.c'))
+-system_ss.add(when: 'CONFIG_I2C_SIM_SENSOR', if_true: files('i2c_sim_sensor.c'))
++system_ss.add(when: 'CONFIG_I2C_SIM_SENSOR', if_true: files('i2c_sim_sensor.c', 'sim_regfile.c'))
+diff --git a/hw/sensor/sim_regfile.c b/hw/sensor/sim_regfile.c
+new file mode 100644
+index 0000000..b0d7073
+--- /dev/null
++++ b/hw/sensor/sim_regfile.c
+@@ -0,0 +1,487 @@
++/*
++ * Host-fed register file shared by the sim-sensor devices
++ *
++ * A 256-byte register file whose contents come from a host process over a
++ * chardev; bus front ends (i2c-sim-sensor, ssi-sim-sensor) map their
++ * protocol onto byte reads and writes of it.  Every update carries a
++ * QEMU_CLOCK_VIRTUAL timestamp and is applied by a virtual-clock timer at
++ * that time, so a run under -icount
++ * gives the same guest-visible values however fast or slow the host is.
++ * The device never waits for the host.
++ *
++ * Sensor semantics (scaling, ranges, conversions) stay on the host.  The
++ * device only knows enough structure to cover common sensor and ADC chips:
++ *
++ *  - stride: bytes per register address (2 for chips with 16-bit
++ *    registers such as the ADS1115);
++ *  - one bank selector: (bits of a 1- or 2-byte register) >> shift picks
++ *    which bank a range of data registers is read from, e.g. the ADS1115
++ *    MUX and PGA fields select a conversion result.  Alternatively the
++ *    bank number is put together from up to four fields in different
++ *    registers ("bank-fields"), e.g. a sleep bit and the accelerometer and
++ *    gyroscope range fields of an IMU;
++ *  - read-set: bits forced to one when read (status "ready" flags);
++ *  - write-clear: bits the guest may set that always read back as zero
++ *    (self-clearing command bits such as a soft reset);
++ *  - read-only: byte ranges the guest cannot write (IDs, status).
++ *
++ * Host to device, one command per line:
++ *   W <virtual_ns> <bank> <offset> <hex bytes>
++ *       write up to 32 bytes at byte offset <offset> of the register file
++ *       (bank -1) or of data bank <bank>, at virtual time <virtual_ns>.
++ *       Times in the past (including 0) apply immediately.
++ *   S <seq>
++ *       reply "A <seq> <now_ns>" once all earlier lines are processed.
++ * Device to host:
++ *   A <seq> <now_ns>                   sync acknowledgement
++ *   G <now_ns> <offset> <hex bytes>    the guest wrote these bytes
++ *   E <message>                        malformed command
++ *
++ * Copyright (c) 2026 Romeo Mattar
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/cutils.h"
++#include "qemu/host-utils.h"
++#include "qemu/timer.h"
++#include "qapi/error.h"
++#include "hw/sensor/sim_regfile.h"
++
++#define SIM_MAX_UPDATE      32
++#define SIM_MAX_PENDING     (1 << 20)
++
++typedef struct SimUpdate {
++    int64_t when_ns;
++    int bank;                   /* -1: register file */
++    uint8_t offset;
++    uint8_t len;
++    uint8_t data[SIM_MAX_UPDATE];
++} SimUpdate;
++
++static void sim_send(SimRegFile *s, const char *fmt, ...)
++    G_GNUC_PRINTF(2, 3);
++
++static void sim_send(SimRegFile *s, const char *fmt, ...)
++{
++    g_autofree char *msg = NULL;
++    va_list ap;
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        return;
++    }
++    va_start(ap, fmt);
++    msg = g_strdup_vprintf(fmt, ap);
++    va_end(ap);
++    /* Non-blocking: a host that stops reading loses notices, QEMU runs on */
++    qemu_chr_fe_write(&s->chr, (const uint8_t *)msg, strlen(msg));
++}
++
++static unsigned sim_current_bank(SimRegFile *s)
++{
++    uint16_t sel = s->regs[s->bank_reg];
++    unsigned i, bank = 0;
++
++    if (s->n_fields) {
++        for (i = 0; i < s->n_fields; i++) {
++            bank |= ((s->regs[s->field_off[i]] & s->field_mask[i]) >>
++                     s->field_shift[i]) << s->field_pos[i];
++        }
++        return bank;
++    }
++    if (s->bank_width == 2) {
++        sel = (sel << 8) | s->regs[(uint8_t)(s->bank_reg + 1)];
++    }
++    return ((sel & s->bank_mask) >> s->bank_shift) % s->nbanks;
++}
++
++static bool sim_is_banked(SimRegFile *s, uint8_t off)
++{
++    return s->nbanks && off >= s->bank_first && off <= s->bank_last;
++}
++
++static uint8_t sim_read_byte(SimRegFile *s, uint8_t off)
++{
++    uint8_t v;
++    unsigned i;
++
++    if (sim_is_banked(s, off)) {
++        v = s->banks[sim_current_bank(s) * s->bank_size + off - s->bank_first];
++    } else {
++        v = s->regs[off];
++    }
++    for (i = 0; i < s->n_read_set; i++) {
++        if (s->read_set_off[i] == off) {
++            v |= s->read_set_mask[i];
++        }
++    }
++    return v;
++}
++
++static void sim_apply(SimRegFile *s, const SimUpdate *u)
++{
++    unsigned i;
++
++    for (i = 0; i < u->len; i++) {
++        uint8_t off = u->offset + i;
++
++        if (u->bank < 0) {
++            s->regs[off] = u->data[i];
++        } else if (sim_is_banked(s, off)) {
++            s->banks[u->bank * s->bank_size + off - s->bank_first] = u->data[i];
++        }
++    }
++}
++
++static void sim_rearm(SimRegFile *s)
++{
++    SimUpdate *head = g_queue_peek_head(&s->pending);
++
++    if (head) {
++        timer_mod(s->timer, head->when_ns);
++    } else {
++        timer_del(s->timer);
++    }
++}
++
++static void sim_timer_cb(void *opaque)
++{
++    SimRegFile *s = opaque;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    SimUpdate *u;
++
++    while ((u = g_queue_peek_head(&s->pending)) && u->when_ns <= now) {
++        sim_apply(s, g_queue_pop_head(&s->pending));
++        g_free(u);
++    }
++    sim_rearm(s);
++}
++
++static gint sim_update_cmp(gconstpointer a, gconstpointer b, gpointer opaque)
++{
++    const SimUpdate *ua = a, *ub = b;
++
++    /* Equal timestamps keep arrival order (g_queue_insert_sorted is stable) */
++    return ua->when_ns < ub->when_ns ? -1 : ua->when_ns > ub->when_ns;
++}
++
++static void sim_queue(SimRegFile *s, SimUpdate *u)
++{
++    SimUpdate *tail = g_queue_peek_tail(&s->pending);
++
++    /* Hosts normally send in time order, which makes this an append */
++    if (!tail || tail->when_ns <= u->when_ns) {
++        g_queue_push_tail(&s->pending, u);
++    } else {
++        g_queue_insert_sorted(&s->pending, u, sim_update_cmp, NULL);
++    }
++    sim_rearm(s);
++}
++
++static int sim_parse_hex(const char *hex, uint8_t *out, unsigned max)
++{
++    size_t n = strlen(hex);
++    unsigned i;
++
++    if (n == 0 || n % 2 || n / 2 > max) {
++        return -1;
++    }
++    for (i = 0; i < n / 2; i++) {
++        int hi = g_ascii_xdigit_value(hex[2 * i]);
++        int lo = g_ascii_xdigit_value(hex[2 * i + 1]);
++
++        if (hi < 0 || lo < 0) {
++            return -1;
++        }
++        out[i] = hi << 4 | lo;
++    }
++    return n / 2;
++}
++
++static void sim_command(SimRegFile *s, char *line)
++{
++    g_auto(GStrv) f = g_strsplit_set(g_strstrip(line), " \t", -1);
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    guint n = g_strv_length(f);
++
++    if (n == 0 || !f[0][0]) {
++        return;
++    }
++    if (!strcmp(f[0], "S") && n == 2) {
++        sim_send(s, "A %s %" PRId64 "\n", f[1], now);
++    } else if (!strcmp(f[0], "W") && n == 5) {
++        g_autofree SimUpdate *u = g_new0(SimUpdate, 1);
++        int64_t bank, off;
++        int len;
++
++        len = sim_parse_hex(f[4], u->data, SIM_MAX_UPDATE);
++        if (qemu_strtoi64(f[1], NULL, 10, &u->when_ns) ||
++            qemu_strtoi64(f[2], NULL, 10, &bank) ||
++            qemu_strtoi64(f[3], NULL, 0, &off) ||
++            bank < -1 || bank >= (int64_t)s->nbanks ||
++            off < 0 || off >= SIM_REGS || len < 0) {
++            sim_send(s, "E bad W command\n");
++            return;
++        }
++        u->bank = bank;
++        u->offset = off;
++        u->len = len;
++        if (u->when_ns <= now) {
++            sim_apply(s, u);
++        } else if (g_queue_get_length(&s->pending) >= SIM_MAX_PENDING) {
++            sim_send(s, "E update queue full\n");
++        } else {
++            sim_queue(s, g_steal_pointer(&u));
++        }
++    } else {
++        sim_send(s, "E unknown command\n");
++    }
++}
++
++static int sim_can_receive(void *opaque)
++{
++    SimRegFile *s = opaque;
++
++    return SIM_LINE_MAX - s->line_len;
++}
++
++static void sim_receive(void *opaque, const uint8_t *buf, int size)
++{
++    SimRegFile *s = opaque;
++    int i;
++
++    for (i = 0; i < size; i++) {
++        if (buf[i] == '\n') {
++            s->line[s->line_len] = '\0';
++            if (s->line_overflow) {
++                sim_send(s, "E line too long\n");
++            } else {
++                sim_command(s, s->line);
++            }
++            s->line_len = 0;
++            s->line_overflow = false;
++        } else if (s->line_len < SIM_LINE_MAX - 1) {
++            s->line[s->line_len++] = buf[i];
++        } else {
++            s->line_overflow = true;
++        }
++    }
++}
++
++static void sim_notify_guest_write(SimRegFile *s)
++{
++    GString *hex;
++    int i;
++
++    if (s->wr_first < 0) {
++        return;
++    }
++    hex = g_string_new(NULL);
++    for (i = s->wr_first; i <= s->wr_last; i++) {
++        g_string_append_printf(hex, "%02x", s->regs[i]);
++    }
++    sim_send(s, "G %" PRId64 " %d %s\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++             s->wr_first, hex->str);
++    g_string_free(hex, true);
++    s->wr_first = -1;
++}
++
++static bool sim_parse_bank_fields(SimRegFile *s, Error **errp)
++{
++    g_auto(GStrv) items = g_strsplit(s->bank_fields, ",", -1);
++    unsigned pos = 0;
++    guint i;
++
++    for (i = 0; items[i]; i++) {
++        uint64_t off, mask;
++        char *colon = strchr(items[i], ':');
++
++        if (i >= SIM_MAX_FIELDS || !colon) {
++            error_setg(errp, "bank-fields: expected up to %d 'offset:mask' "
++                       "items", SIM_MAX_FIELDS);
++            return false;
++        }
++        *colon = '\0';
++        if (qemu_strtou64(items[i], NULL, 0, &off) ||
++            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
++            off >= SIM_REGS || !mask || mask > 0xff) {
++            error_setg(errp, "bank-fields: bad item '%s'", items[i]);
++            return false;
++        }
++        s->field_off[i] = off;
++        s->field_mask[i] = mask;
++        s->field_shift[i] = ctz32(mask);
++        s->field_pos[i] = pos;
++        /* The first item supplies the least significant bank number bits */
++        pos += 32 - clz32(mask >> ctz32(mask));
++        s->n_fields = i + 1;
++    }
++    if (pos > 6) {
++        error_setg(errp, "bank-fields select among 2^%u banks, at most %d",
++                   pos, SIM_MAX_BANKS);
++        return false;
++    }
++    s->nbanks = 1u << pos;
++    return true;
++}
++
++static bool sim_parse_masks(const char *prop, const char *str, uint8_t *offs,
++                            uint8_t *masks, unsigned *n, Error **errp)
++{
++    g_auto(GStrv) items = NULL;
++    guint i;
++
++    if (!str || !*str) {
++        return true;
++    }
++    items = g_strsplit(str, ",", -1);
++    for (i = 0; items[i]; i++) {
++        uint64_t off, mask;
++        char *colon = strchr(items[i], ':');
++
++        if (i >= SIM_MAX_MASKS || !colon) {
++            error_setg(errp, "%s: expected up to %d 'offset:mask' items",
++                       prop, SIM_MAX_MASKS);
++            return false;
++        }
++        *colon = '\0';
++        if (qemu_strtou64(items[i], NULL, 0, &off) ||
++            qemu_strtou64(colon + 1, NULL, 0, &mask) ||
++            off >= SIM_REGS || mask > 0xff) {
++            error_setg(errp, "%s: bad item '%s'", prop, items[i]);
++            return false;
++        }
++        offs[i] = off;
++        masks[i] = mask;
++        *n = i + 1;
++    }
++    return true;
++}
++
++static bool sim_parse_read_only(SimRegFile *s, Error **errp)
++{
++    g_auto(GStrv) items = NULL;
++    guint i;
++
++    if (!s->read_only_str || !*s->read_only_str) {
++        return true;
++    }
++    items = g_strsplit(s->read_only_str, ",", -1);
++    for (i = 0; items[i]; i++) {
++        uint64_t first, last;
++        char *dash = strchr(items[i], '-');
++
++        if (dash) {
++            *dash = '\0';
++        }
++        if (qemu_strtou64(items[i], NULL, 0, &first) ||
++            (dash && qemu_strtou64(dash + 1, NULL, 0, &last))) {
++            error_setg(errp, "read-only: bad range '%s'", items[i]);
++            return false;
++        }
++        if (!dash) {
++            last = first;
++        }
++        if (first > last || last >= SIM_REGS) {
++            error_setg(errp, "read-only: range out of bounds");
++            return false;
++        }
++        while (first <= last) {
++            s->read_only[first++] = true;
++        }
++    }
++    return true;
++}
++
++uint8_t sim_regfile_read(SimRegFile *rf, uint8_t off)
++{
++    return sim_read_byte(rf, off);
++}
++
++void sim_regfile_write(SimRegFile *s, uint8_t off, uint8_t data)
++{
++    if (!s->read_only[off] && !sim_is_banked(s, off)) {
++        unsigned i;
++
++        for (i = 0; i < s->n_write_clear; i++) {
++            if (s->write_clear_off[i] == off) {
++                data &= ~s->write_clear_mask[i];
++            }
++        }
++        s->regs[off] = data;
++        if (s->wr_first < 0) {
++            s->wr_first = s->wr_last = off;
++        } else {
++            s->wr_first = MIN(s->wr_first, off);
++            s->wr_last = MAX(s->wr_last, off);
++        }
++    }
++}
++
++void sim_regfile_end_transfer(SimRegFile *rf)
++{
++    sim_notify_guest_write(rf);
++}
++
++bool sim_regfile_realize(SimRegFile *s, Error **errp)
++{
++    if (s->stride == 0) {
++        error_setg(errp, "stride must be at least 1");
++        return false;
++    }
++    if (s->bank_width > 2) {
++        error_setg(errp, "bank-width must be 0 (no banking), 1 or 2");
++        return false;
++    }
++    if (s->bank_fields && *s->bank_fields) {
++        if (s->bank_width) {
++            error_setg(errp, "bank-fields replaces bank-reg, bank-width, "
++                       "bank-mask and bank-shift; give one or the other");
++            return false;
++        }
++        if (!sim_parse_bank_fields(s, errp)) {
++            return false;
++        }
++    } else if (s->bank_width) {
++        if (!s->bank_mask) {
++            error_setg(errp, "banking needs bank-mask");
++            return false;
++        }
++        s->nbanks = (s->bank_mask >> s->bank_shift) + 1;
++        if (s->nbanks > SIM_MAX_BANKS) {
++            error_setg(errp, "bank selector allows %u banks, at most %d",
++                       s->nbanks, SIM_MAX_BANKS);
++            return false;
++        }
++    }
++    if (s->nbanks) {
++        if (s->bank_first > s->bank_last) {
++            error_setg(errp, "banking needs bank-first <= bank-last");
++            return false;
++        }
++        s->bank_size = s->bank_last - s->bank_first + 1;
++        s->banks = g_malloc0(s->nbanks * s->bank_size);
++    }
++    if (!sim_parse_masks("read-set", s->read_set, s->read_set_off,
++                         s->read_set_mask, &s->n_read_set, errp) ||
++        !sim_parse_masks("write-clear", s->write_clear, s->write_clear_off,
++                         s->write_clear_mask, &s->n_write_clear, errp) ||
++        !sim_parse_read_only(s, errp)) {
++        return false;
++    }
++    g_queue_init(&s->pending);
++    s->wr_first = -1;
++    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sim_timer_cb, s);
++    qemu_chr_fe_set_handlers(&s->chr, sim_can_receive, sim_receive, NULL,
++                             NULL, s, NULL, true);
++    return true;
++}
++
++void sim_regfile_unrealize(SimRegFile *s)
++{
++    qemu_chr_fe_deinit(&s->chr, false);
++    timer_free(s->timer);
++    g_queue_clear_full(&s->pending, g_free);
++    g_free(s->banks);
++}
+diff --git a/include/hw/sensor/sim_regfile.h b/include/hw/sensor/sim_regfile.h
+new file mode 100644
+index 0000000..9bc7515
+--- /dev/null
++++ b/include/hw/sensor/sim_regfile.h
+@@ -0,0 +1,98 @@
++/*
++ * Host-fed register file shared by the sim-sensor devices
++ *
++ * A 256-byte register file whose contents a host process supplies over a
++ * chardev, with updates applied at QEMU_CLOCK_VIRTUAL timestamps.  The bus
++ * front ends (i2c-sim-sensor, ssi-sim-sensor) only translate their bus
++ * protocol into register reads and writes.  See sim_regfile.c for the
++ * structure the register file can express and for the host protocol.
++ *
++ * Copyright (c) 2026 Romeo Mattar
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_SENSOR_SIM_REGFILE_H
++#define HW_SENSOR_SIM_REGFILE_H
++
++#include "chardev/char-fe.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "qemu/timer.h"
++
++#define SIM_REGS            256
++#define SIM_MAX_BANKS       64
++#define SIM_LINE_MAX        512
++#define SIM_MAX_MASKS       8
++#define SIM_MAX_FIELDS      4
++
++typedef struct SimRegFile {
++    CharBackend chr;
++    QEMUTimer *timer;
++    GQueue pending;             /* SimUpdate *, sorted by when_ns */
++
++    uint8_t regs[SIM_REGS];
++    uint8_t *banks;             /* nbanks * bank_size bytes */
++    unsigned nbanks;
++    unsigned bank_size;
++
++    /* bank-fields: field i supplies bank number bits [pos, pos + width) */
++    uint8_t field_off[SIM_MAX_FIELDS];
++    uint8_t field_mask[SIM_MAX_FIELDS];
++    uint8_t field_shift[SIM_MAX_FIELDS];
++    uint8_t field_pos[SIM_MAX_FIELDS];
++    unsigned n_fields;
++
++    uint8_t read_set_off[SIM_MAX_MASKS];
++    uint8_t read_set_mask[SIM_MAX_MASKS];
++    unsigned n_read_set;
++    uint8_t write_clear_off[SIM_MAX_MASKS];
++    uint8_t write_clear_mask[SIM_MAX_MASKS];
++    unsigned n_write_clear;
++    bool read_only[SIM_REGS];
++
++    int wr_first;               /* guest-written range, -1: none */
++    int wr_last;
++
++    char line[SIM_LINE_MAX];
++    unsigned line_len;
++    bool line_overflow;
++
++    /* Properties */
++    uint8_t stride;
++    uint8_t bank_reg;
++    uint8_t bank_width;
++    uint16_t bank_mask;
++    uint8_t bank_shift;
++    uint8_t bank_first;
++    uint8_t bank_last;
++    char *bank_fields;
++    char *read_set;
++    char *write_clear;
++    char *read_only_str;
++} SimRegFile;
++
++#define DEFINE_SIM_REGFILE_PROPERTIES(_state, _f)                       \
++    DEFINE_PROP_CHR("chardev", _state, _f.chr),                        \
++    DEFINE_PROP_UINT8("stride", _state, _f.stride, 1),                 \
++    DEFINE_PROP_UINT8("bank-reg", _state, _f.bank_reg, 0),             \
++    DEFINE_PROP_UINT8("bank-width", _state, _f.bank_width, 0),         \
++    DEFINE_PROP_UINT16("bank-mask", _state, _f.bank_mask, 0),          \
++    DEFINE_PROP_UINT8("bank-shift", _state, _f.bank_shift, 0),         \
++    DEFINE_PROP_UINT8("bank-first", _state, _f.bank_first, 0),         \
++    DEFINE_PROP_UINT8("bank-last", _state, _f.bank_last, 0),           \
++    DEFINE_PROP_STRING("bank-fields", _state, _f.bank_fields),         \
++    DEFINE_PROP_STRING("read-set", _state, _f.read_set),               \
++    DEFINE_PROP_STRING("write-clear", _state, _f.write_clear),         \
++    DEFINE_PROP_STRING("read-only", _state, _f.read_only_str)
++
++bool sim_regfile_realize(SimRegFile *rf, Error **errp);
++void sim_regfile_unrealize(SimRegFile *rf);
++/* Guest read of one byte at a byte offset (banks and read-set applied) */
++uint8_t sim_regfile_read(SimRegFile *rf, uint8_t off);
++/* Guest write of one byte (read-only, banked and write-clear applied) */
++void sim_regfile_write(SimRegFile *rf, uint8_t off, uint8_t data);
++/* End of a guest transfer: report the bytes it wrote to the host */
++void sim_regfile_end_transfer(SimRegFile *rf);
++
++#endif
+-- 
+2.43.0
+

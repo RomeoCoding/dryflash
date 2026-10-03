@@ -118,4 +118,56 @@ async def _run_step(session, step: Step, cursor: int, rec: dict, check_fail_on, 
         rec["result"] = await (session.sensors.set(**spec) if action == "sensor_set"
                                else session.sensors.stream(**spec))
         return cursor
+    if action in ("gpio_set", "gpio_pulse", "expect_gpio"):
+        hub = session.sensors
+        if hub is None or hub.gpio is None:
+            raise _Fail(f"{action} needs an esp32 session on the dryflash-sensors image")
+        spec = getattr(step, action)
+        if action == "gpio_set":
+            rec["result"] = await hub.gpio_events([(spec.at_ms, spec.pin, spec.level)])
+            return cursor
+        if action == "gpio_pulse":
+            rec["result"] = await hub.gpio_pulse(spec.pin, spec.width_ms, at_ms=spec.at_ms, level=spec.level)
+            return cursor
+        stats = await hub.gpio_window(spec.pin, spec.within_ms)
+        rec["result"] = stats
+        await session.resume()
+        check_fail_on()
+        problems = []
+        if spec.level is not None and stats["level_at_end"] != spec.level:
+            problems.append(f"level at the end is {stats['level_at_end']}, expected {spec.level}")
+        if spec.min_edges is not None and stats["edges"] < spec.min_edges:
+            problems.append(f"{stats['edges']} edges, expected at least {spec.min_edges}")
+        if spec.max_edges is not None and stats["edges"] > spec.max_edges:
+            problems.append(f"{stats['edges']} edges, expected at most {spec.max_edges}")
+        if spec.freq_hz is not None:
+            lo, hi = spec.freq_hz
+            f = stats["freq_hz"]
+            if f is None or not lo <= f <= hi:
+                problems.append(f"frequency {f} Hz is outside [{lo:g}, {hi:g}] (needs 2+ rising edges)")
+        if problems:
+            raise _Fail(f"GPIO{spec.pin} over {spec.within_ms:g} ms: " + "; ".join(problems))
+        return cursor
+    if action == "expect_display":
+        spec = step.expect_display
+        if session.sensors is None:
+            raise _Fail("expect_display needs an ssd1306 declared in 'sensors'")
+        rx = re.compile(spec.regex) if spec.regex is not None else None
+        end = loop.time() + step.timeout_s
+        while True:
+            snap = await session.sensors.display_snapshot(spec.sensor)
+            text = "\n".join(snap["text"])
+            m = rx.search(text) if rx is not None else (spec.contains in text or None)
+            if m:
+                rec["text"] = snap["text"]
+                if rx is not None:
+                    rec["match"], rec["groups"] = m.group(0), list(m.groups())
+                return cursor
+            check_fail_on()
+            if not session.alive:
+                raise _Fail(f"session {session.state} ({session.exit_reason}) before the display showed it")
+            if loop.time() >= end:
+                raise _Fail(f"display {spec.sensor} did not show {spec.contains or spec.regex!r} within "
+                            f"{step.timeout_s}s; it shows {snap['text']} (on={snap['on']})")
+            await asyncio.sleep(remaining(_POLL_S))
     raise _Fail(f"unsupported action {action}")

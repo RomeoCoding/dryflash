@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from ..qmp import QmpError
-from .link import ClockLink, LinkError, SensorLink
-from .models import SensorModel, SensorSpecError, make_model
+from .display import read_text, text_art, write_png
+from .gpio import GpioBank, GpioSpecError, check_pad, window_stats
+from .link import ClockLink, GpioLink, LinkError, SensorLink
+from .models import SensorModel, SensorSpecError, Ssd1306, make_model
 
 CHUNK_NS = int(os.environ.get("DRYFLASH_CHUNK_NS", 100_000_000))  # refill slice (virtual ns)
 PREFILL_NS = int(os.environ.get("DRYFLASH_PREFILL_NS", 2 * CHUNK_NS))
@@ -72,11 +74,13 @@ def _qemu_opt(v: str) -> str:
 
 
 class SensorHub:
-    def __init__(self, session: Any, models: list[SensorModel]):
+    def __init__(self, session: Any, models: list[SensorModel], gpio: GpioBank | None = None):
         self.session = session
         self.models = models
+        self.gpio = gpio
         self.links: list[SensorLink] = []
         self.clock: ClockLink | None = None
+        self.gpio_link: GpioLink | None = None
         self.horizon = 0
         self.user_target: int | None = None
         self.user_paused = False
@@ -87,6 +91,11 @@ class SensorHub:
         self._closing = False
         self.stop_error: str | None = None
 
+    @property
+    def slicing(self) -> bool:
+        """Run in virtual-time slices (pause at each horizon) when there is anything to feed in."""
+        return bool(self.models) or bool(self.gpio and self.gpio.declared)
+
     # ----- QEMU wiring ---------------------------------------------------------------------------
     def _sock(self, name: str) -> Path:
         return Path(self.session.run_dir) / f"{name}.sock"
@@ -94,11 +103,21 @@ class SensorHub:
     def qemu_args(self) -> list[str]:
         args = ["-chardev", f"socket,id=simclk,path={self._sock('simclk')},server=on,wait=off",
                 "-device", "sim-clock,chardev=simclk"]
+        if self.gpio is not None:
+            args += ["-chardev", f"socket,id=simgpio,path={self._sock('simgpio')},server=on,wait=off",
+                     "-device", "sim-gpio,chardev=simgpio"]
         for i, m in enumerate(self.models):
-            props = [f"bus=i2c-bus.{m.bus}", f"address=0x{m.address:02x}", f"chardev=sens{i}"]
+            if m.interface == "spi":
+                dev = "ssi-sim-sensor"
+                props = [f"bus={m.bus}", f"cs={m.cs}", f"chardev=sens{i}"]
+                if m.cs_gpio is not None:
+                    props.append(f"cs-gpio={m.cs_gpio}")
+            else:
+                dev = "i2c-sim-sensor"
+                props = [f"bus=i2c-bus.{m.bus}", f"address=0x{m.address:02x}", f"chardev=sens{i}"]
             props += [f"{k}={_qemu_opt(v)}" for k, v in m.device_props().items()]
             args += ["-chardev", f"socket,id=sens{i},path={self._sock(f'sens{i}')},server=on,wait=off",
-                     "-device", "i2c-sim-sensor," + ",".join(props)]
+                     "-device", dev + "," + ",".join(props)]
         return args
 
     async def connect(self) -> None:
@@ -106,23 +125,34 @@ class SensorHub:
         self._closing = False
         self.stop_error = None
         self.clock = await ClockLink.connect(self._sock("simclk"), on_stopped=self._on_stopped)
-        self.links = [await SensorLink.connect(self._sock(f"sens{i}"), on_guest_write=m.on_guest_write)
+        self.links = [await SensorLink.connect(self._sock(f"sens{i}"), on_guest_write=m.on_guest_write,
+                                               on_stream=m.on_stream)
                       for i, m in enumerate(self.models)]
+        if self.gpio is not None:
+            self.gpio.traces.clear()  # a restarted QEMU starts with every pad low
+            self.gpio_link = await GpioLink.connect(self._sock("simgpio"), on_change=self.gpio.on_change)
+            await self.gpio_link.send([GpioLink.level_line(*e) for e in self.gpio.initial_lines()])
         self.horizon = 0
-        if self.models:
+        if self.slicing:
             for m, link in zip(self.models, self.links):
                 await link.send(_initial_lines(m) + sample_lines(m, 0, PREFILL_NS))
+            await self._flush_gpio()
             await self._sync_all()
             self.horizon = PREFILL_NS
 
     async def _sync_all(self) -> None:
-        await asyncio.gather(*(link.sync() for link in self.links))
+        links = self.links + ([self.gpio_link] if self.gpio_link is not None else [])
+        await asyncio.gather(*(link.sync() for link in links))
+
+    async def _flush_gpio(self) -> None:
+        if self.gpio is not None and self.gpio_link is not None:
+            await self.gpio_link.send([GpioLink.level_line(*e) for e in self.gpio.take_pending()])
 
     # ----- virtual-time control --------------------------------------------------------------------
     async def arm(self) -> None:
         if self.clock is None:
             return
-        targets = [t for t in (self.user_target, self.horizon if self.models else None) if t is not None]
+        targets = [t for t in (self.user_target, self.horizon if self.slicing else None) if t is not None]
         if targets:
             await self.clock.stop_at(min(targets))
         else:
@@ -155,7 +185,7 @@ class SensorHub:
 
     async def _handle_stop_locked(self, ns: int) -> None:
         async with self._lock:
-            if self.models and ns >= self.horizon:
+            if self.slicing and ns >= self.horizon:
                 await self._refill(ns + CHUNK_NS)
             if self.user_target is not None and ns >= self.user_target:
                 self.user_target = None
@@ -171,6 +201,7 @@ class SensorHub:
         start, end = self.horizon, max(until_ns, self.horizon + CHUNK_NS)
         for m, link in zip(self.models, self.links):
             await link.send(sample_lines(m, start, end))
+        await self._flush_gpio()
         await self._sync_all()
         self.horizon = end
         self.refills += 1
@@ -237,6 +268,99 @@ class SensorHub:
     async def stream(self, sensor: str, waveform: dict[str, Any], at_ms: float | None = None) -> dict:
         return await self.set(sensor, waveform=waveform, at_ms=at_ms)
 
+    # ----- GPIO ------------------------------------------------------------------------------------
+    def _require_gpio(self) -> GpioBank:
+        if self.gpio is None or self.gpio_link is None:
+            raise SensorSpecError("GPIO injection needs the dryflash-sensors image (patched QEMU with sim-gpio)")
+        return self.gpio
+
+    async def gpio_events(self, events: list[tuple[float | None, Any, int]]) -> dict:
+        """Apply pad levels [(at_ms or None for now, pin, level)] from outside the chip."""
+        gpio = self._require_gpio()
+        async with self._lock:
+            now = await self.now()
+            planned = []
+            for at_ms, pin, level in events:
+                pad = check_pad(pin)
+                t = round(at_ms * 1e6) if at_ms is not None else now
+                planned.append((max(t, now), pad, 1 if level else 0))
+            running = self.session.state == "running"
+            # Deterministic only if QEMU is touched while the VM is stopped: either it is paused now,
+            # or every event lies beyond the horizon and goes out with the next slice.
+            if not running:
+                mode = "sent while paused"
+                await self.gpio_link.send([GpioLink.level_line(*e) for e in planned])
+                await self.gpio_link.sync()
+            elif self.slicing and all(t >= self.horizon for t, _, _ in planned):
+                mode = "queued for the next slice"
+                for e in planned:
+                    gpio.schedule(*e)
+            else:
+                mode = "sent while running"
+                await self.gpio_link.send([GpioLink.level_line(*e) for e in planned])
+                await self.gpio_link.sync()
+        return {"events": [{"pin": p, "level": lv, "at_ms": t / 1e6} for t, p, lv in planned],
+                "deterministic": mode != "sent while running", "delivery": mode,
+                **({"note": "the board was running and the time was not beyond the next slice; declare the "
+                            "pin in gpio at emu_start and give at_ms ahead of the current time (or pause "
+                            "first) for reproducible timing"} if mode == "sent while running" else {})}
+
+    async def gpio_pulse(self, pin: Any, width_ms: float, at_ms: float | None = None,
+                         level: int | None = None) -> dict:
+        gpio = self._require_gpio()
+        pad = check_pad(pin)
+        if width_ms <= 0:
+            raise GpioSpecError("width_ms must be positive")
+        active = (1 - gpio.default_of(pad)) if level is None else (1 if level else 0)
+        start = at_ms if at_ms is not None else (await self.now()) / 1e6
+        return await self.gpio_events([(start, pad, active), (start + width_ms, pad, 1 - active)])
+
+    async def gpio_read(self, pin: Any) -> dict:
+        gpio = self._require_gpio()
+        pad = check_pad(pin)
+        await self.gpio_link.sync()
+        now = await self.now()
+        return {"pin": pad, "level": gpio.level(pad, now), "virtual_ms": now / 1e6,
+                "declared_default": gpio.defaults.get(pad)}
+
+    async def gpio_trace(self, pin: Any, cursor: int = 0, max_edges: int = 200) -> dict:
+        gpio = self._require_gpio()
+        pad = check_pad(pin)
+        await self.gpio_link.sync()
+        out = gpio.trace(pad, cursor, max_edges)
+        out["virtual_ms_now"] = (await self.now()) / 1e6
+        return out
+
+    async def gpio_window(self, pin: Any, window_ms: float) -> dict:
+        """Run exactly window_ms of virtual time (then stay paused) and summarise the pad over it."""
+        gpio = self._require_gpio()
+        pad = check_pad(pin)
+        delta = round(window_ms * 1e6)
+        end = await self.run_until_offset(delta)
+        start = end - delta  # the window starts where run_until_offset read the clock
+        await self.gpio_link.sync()
+        edges = gpio.edges(pad, start, end)
+        stats = window_stats(edges, start, end)
+        stats.update(pin=pad, level_at_end=gpio.level(pad, end))
+        return stats
+
+    # ----- displays --------------------------------------------------------------------------------
+    async def display_snapshot(self, sensor: str, png_path: Path | None = None) -> dict:
+        m = self.model(sensor)
+        if not isinstance(m, Ssd1306):
+            raise SensorSpecError(f"sensor {sensor!r} is a {m.model}, not a display (ssd1306)")
+        await self.links[self.models.index(m)].sync()  # every write transfer so far has been decoded
+        img = m.display.image()
+        out = m.display.describe()
+        out.update(text_art(img))
+        out["text"] = read_text(img)
+        out["virtual_ms"] = (await self.now()) / 1e6
+        out["last_write_ms"] = m.last_write_ns / 1e6 if m.last_write_ns is not None else None
+        if png_path is not None:
+            write_png(img, png_path)
+            out["png"] = str(png_path)
+        return out
+
     def describe(self) -> list[dict]:
         out = []
         for m, link in zip(self.models, self.links or [None] * len(self.models)):
@@ -263,16 +387,18 @@ class SensorHub:
         await asyncio.gather(*tasks, return_exceptions=True)
         for link in self.links:
             await link.close()
+        if self.gpio_link is not None:
+            await self.gpio_link.close()
         if self.clock is not None:
             await self.clock.close()
-        self.links, self.clock = [], None
+        self.links, self.clock, self.gpio_link = [], None, None
 
 
-async def attach_sensors(session: Any, specs: list[dict]) -> list[str]:
+async def attach_sensors(session: Any, specs: list[dict], gpio_specs: list[dict] | None = None) -> list[str]:
     """Create the session's SensorHub if its QEMU has the sim devices; return extra QEMU args."""
     caps = await qemu_devices(session.target.qemu)
-    if specs and not session.target.sensors:
-        raise SensorSpecError(f"sensors are supported only on esp32, not {session.target.name}")
+    if (specs or gpio_specs) and not session.target.sensors:
+        raise SensorSpecError(f"sensors and GPIO injection are supported only on esp32, not {session.target.name}")
     if specs and "i2c-sim-sensor" not in caps:
         raise SensorSpecError("this QEMU has no i2c-sim-sensor device: sensor injection needs the "
                               "dryflash-sensors image (docker/qemu-sensors.Dockerfile)")
@@ -283,10 +409,26 @@ async def attach_sensors(session: Any, specs: list[dict]) -> list[str]:
     names = [m.name for m in models]
     if len(set(names)) != len(names):
         raise SensorSpecError(f"sensor names must be unique: {names}")
-    addrs = [(m.bus, m.address) for m in models]
-    if len(set(addrs)) != len(addrs):
-        raise SensorSpecError("two sensors share a bus and address")
-    hub = SensorHub(session, models)
+    i2c = [(m.bus, m.address) for m in models if m.interface == "i2c"]
+    if len(set(i2c)) != len(i2c):
+        raise SensorSpecError("two I2C sensors share a bus and address")
+    spi = [(m.bus, m.cs) for m in models if m.interface == "spi"]
+    if len(set(spi)) != len(spi):
+        raise SensorSpecError("two SPI sensors share a bus and cs line; give each its own cs (0-2), "
+                              "also when chip select comes from cs_gpio")
+    if spi and "ssi-sim-sensor" not in caps:
+        raise SensorSpecError("this QEMU has no ssi-sim-sensor device: SPI sensors need a newer "
+                              "dryflash-sensors image")
+    gpio = None
+    if "sim-gpio" in caps:
+        gpio = GpioBank(gpio_specs)
+        for m in models:
+            if m.interface == "spi" and m.cs_gpio is not None:
+                gpio.add_default(m.cs_gpio, 1, f"sensor {m.name} (cs_gpio)")  # CS idles high
+    elif gpio_specs or any(m.interface == "spi" and m.cs_gpio is not None for m in models):
+        raise SensorSpecError("this QEMU has no sim-gpio device: GPIO injection and cs_gpio need a "
+                              "newer dryflash-sensors image")
+    hub = SensorHub(session, models, gpio)
     session.sensors = hub
     session.vclock = hub
     return hub.qemu_args()

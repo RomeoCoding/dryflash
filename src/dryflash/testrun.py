@@ -34,7 +34,8 @@ async def run_test(mgr: SessionManager, project_dir: Path, scenario_path: Path, 
     s = await mgr.start(SessionConfig(
         target=scenario.target, flash_image=bdir / "flash_qemu.bin", elf=elf, project_dir=project_dir,
         deterministic=emu.deterministic, icount_shift=emu.icount_shift, reboot=emu.reboot,
-        watchdogs=emu.watchdogs, extra_args=list(emu.qemu_args), sensors=list(scenario.sensors)))
+        watchdogs=emu.watchdogs, extra_args=list(emu.qemu_args), sensors=list(scenario.sensors),
+        gpio=list(scenario.gpio), uart_tcp_port=emu.uart_tcp_port))
     try:
         result = await run_scenario(s, scenario)
         if not result["passed"]:

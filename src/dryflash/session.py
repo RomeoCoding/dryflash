@@ -47,6 +47,8 @@ class SessionConfig:
     watchdogs: bool = True
     extra_args: list[str] = field(default_factory=list)
     sensors: list[dict[str, Any]] = field(default_factory=list)
+    gpio: list[dict[str, Any]] = field(default_factory=list)
+    uart_tcp_port: int | None = None
 
 
 async def _default_efuse(target: str) -> Path | None:
@@ -98,6 +100,10 @@ class Session:
         self._exited = asyncio.Event()
         self._extra_args: list[str] = []
         self.resets = 0
+        # UART0 tee for an external program (uart_tcp_port): output goes to every client, and
+        # client input goes to the guest's RX like uart_write.
+        self._tcp_server: asyncio.base_events.Server | None = None
+        self._tcp_clients: set[asyncio.StreamWriter] = set()
 
     # ----- lifecycle -------------------------------------------------------------------------
     async def start(self, extra_args: list[str] | None = None) -> None:
@@ -110,7 +116,38 @@ class Session:
         if efuse is not None:
             shutil.copyfile(efuse, self.run_dir / "efuse.bin")
         self._extra_args = list(extra_args or [])
+        if cfg.uart_tcp_port is not None:
+            await self._start_tcp(cfg.uart_tcp_port)
         await self._launch()
+
+    async def _start_tcp(self, port: int) -> None:
+        try:
+            self._tcp_server = await asyncio.start_server(self._tcp_client, host="0.0.0.0", port=port)
+        except OSError as e:
+            raise SessionError(f"cannot listen on TCP port {port} for the UART tee: {e}") from None
+
+    async def _tcp_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._tcp_clients.add(writer)
+        try:
+            while data := await reader.read(4096):
+                if self.alive and self._uart_writer is not None:
+                    # One write per received chunk: an agent's uart_write and the client's bytes
+                    # interleave chunk by chunk, never inside a chunk.
+                    self._uart_writer.write(data)
+                    await self._uart_writer.drain()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self._tcp_clients.discard(writer)
+            writer.close()
+
+    def _tee(self, data: bytes) -> None:
+        for w in list(self._tcp_clients):
+            if w.is_closing() or w.transport.get_write_buffer_size() > 1 << 20:
+                self._tcp_clients.discard(w)  # a client that stopped reading is dropped, not waited for
+                w.close()
+                continue
+            w.write(data)
 
     async def _launch(self) -> None:
         cfg = self.config
@@ -164,6 +201,8 @@ class Session:
             async with self._uart_cond:
                 self.uart.append(data)
                 self._uart_cond.notify_all()
+            if self._tcp_clients:
+                self._tee(data)
 
     async def _pump_stderr(self) -> None:
         assert self.proc and self.proc.stdout
@@ -233,6 +272,12 @@ class Session:
             except Exception:
                 pass
         await self._terminate_process()
+        if self._tcp_server is not None:
+            self._tcp_server.close()
+            for w in list(self._tcp_clients):
+                w.close()
+            self._tcp_clients.clear()
+            self._tcp_server = None
         shutil.rmtree(self.run_dir, ignore_errors=True)
         if prev == "exited":
             self.state = "exited"
@@ -419,6 +464,10 @@ class Session:
             "exit_code": self.exit_code,
             "exit_reason": self.exit_reason,
             "sensors": self.sensors.describe() if self.sensors is not None else [],
+            "gpio": (self.sensors.gpio.describe() if self.sensors is not None and self.sensors.gpio is not None
+                     else None),
+            "uart_tcp_port": self.config.uart_tcp_port,
+            "uart_tcp_clients": len(self._tcp_clients),
             "virtual_time_control": self.sensors is not None,
             "exact_run_for": self.vclock is not None,
             "elf": str(self.config.elf) if self.config.elf else None,
@@ -442,7 +491,7 @@ class SessionManager:
         self._sessions[s.id] = s
         try:
             # Adds the sim-clock (and any declared sensors) when this QEMU has the patched devices.
-            extra = await attach_sensors(s, config.sensors)
+            extra = await attach_sensors(s, config.sensors, config.gpio)
             await s.start(extra)
             if s.sensors is not None:
                 await s.sensors.connect()

@@ -1,0 +1,116 @@
+From ee27f2af451cbfaad59e7526fca72c7e39119db2 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:10:22 +0000
+Subject: [PATCH] hw/ssi/esp32_spi: latch TRANS_DONE and raise the completion
+ interrupt
+
+SPI_SLAVE read as the constant TRANS_DONE | TRANS_INTEN and the
+controller IRQ, though created and routed to the interrupt matrix, was
+never raised.  Polling drivers worked, but ESP-IDF's interrupt-driven
+spi_device_transmit() (queue_trans + get_trans_result) waits for the
+SPI interrupt and blocked forever.
+
+Store SPI_SLAVE.  Per the TRM (register 20.15 SPI_SLAVE_REG, 20.6.1),
+TRANS_DONE is the raw status of SPI_TRANS_DONE_INT, set by hardware when
+an operation completes and cleared by software, and TRANS_INTEN enables
+it.  Operations complete synchronously in this model, so TRANS_DONE is
+latched and TRANS_CNT incremented at the end of every command, and the
+IRQ follows TRANS_DONE && TRANS_INTEN.  Polling drivers, which clear
+TRANS_DONE before starting and wait for it afterwards, keep working.
+
+TRANS_CNT is at bits 26:23 (TRM); the field definition said 25:22.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/ssi/esp32_spi.c         | 20 +++++++++++++++++++-
+ include/hw/ssi/esp32_spi.h |  3 ++-
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index dc18faa..7591311 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -88,12 +88,19 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
+         r = 0;
+         break;
+     case A_SPI_SLAVE:
+-        r = BIT(R_SPI_SLAVE_TRANS_DONE_SHIFT) | BIT(R_SPI_SLAVE_TRANS_INTEN_SHIFT);
++        r = s->slave_reg;
+         break;
+     }
+     return r;
+ }
+ 
++/* SPI_TRANS_DONE is the raw status of SPI_TRANS_DONE_INT (TRM 20.6.1) */
++static void esp32_spi_update_irq(Esp32SpiState *s)
++{
++    qemu_set_irq(s->irq, FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_DONE) &&
++                         FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_INTEN));
++}
++
+ static void esp32_spi_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
+@@ -135,6 +142,10 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
+     case A_SPI_PIN:
+         s->pin_reg = value;
+         break;
++    case A_SPI_SLAVE:
++        s->slave_reg = value;
++        esp32_spi_update_irq(s);
++        break;
+     case A_SPI_CMD:
+         esp32_spi_do_command(s, value);
+         break;
+@@ -202,6 +213,7 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+     Esp32SpiTransaction t = {
+         .cmd_bytes = 1
+     };
++    uint32_t cnt;
+     switch (cmd_reg) {
+     case R_SPI_CMD_READ_MASK:
+         t.cmd = CMD_READ;
+@@ -298,6 +310,11 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+         return;
+     }
+     esp32_spi_transaction(s, &t);
++    /* The operation completes at once: count it and latch TRANS_DONE */
++    cnt = FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_CNT) + 1;
++    s->slave_reg = FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_CNT, cnt);
++    s->slave_reg = FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 1);
++    esp32_spi_update_irq(s);
+ }
+ 
+ 
+@@ -316,6 +333,7 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
+     s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
+     s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
+     s->status_reg = 0;
++    s->slave_reg = 0;
+ }
+ 
+ static void esp32_spi_realize(DeviceState *dev, Error **errp)
+diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
+index dcf9bc8..0b5a9b2 100644
+--- a/include/hw/ssi/esp32_spi.h
++++ b/include/hw/ssi/esp32_spi.h
+@@ -30,6 +30,7 @@ typedef struct Esp32SpiState {
+     uint32_t mosi_dlen_reg;
+     uint32_t miso_dlen_reg;
+     uint32_t pin_reg;
++    uint32_t slave_reg;
+     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
+ } Esp32SpiState;
+ 
+@@ -82,7 +83,7 @@ REG32(SPI_PIN, 0x34)
+ REG32(SPI_SLAVE, 0x38)
+     FIELD(SPI_SLAVE, TRANS_DONE, 4, 1)
+     FIELD(SPI_SLAVE, TRANS_INTEN, 9, 1)
+-    FIELD(SPI_SLAVE, TRANS_CNT, 22, 4)
++    FIELD(SPI_SLAVE, TRANS_CNT, 23, 4)
+     FIELD(SPI_SLAVE, SLAVE_MODE, 30, 1)
+ 
+ REG32(SPI_W0, 0x80)
+-- 
+2.43.0
+

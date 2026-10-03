@@ -143,3 +143,45 @@ async def test_mpu6050_ranges_sleep_reset_and_determinism():
     logs = [upto(r["transcript"], r"tick 12 [^\n]*\n") for r in runs]
     assert logs[0] == logs[1], "two deterministic runs must give byte-identical UART output"
     assert len(re.findall(r"^range afs\d fs\d ", logs[0], re.M)) == 16
+
+
+IO = REPO / "tests" / "firmware" / "io_probe"
+
+
+async def test_gpio_and_spi_devices_scenario_is_deterministic():
+    async with Client(create_server()) as c:
+        runs = [await call(c, "test_run", project_dir=str(IO), scenario_file="scenario.yaml") for _ in range(2)]
+    for r in runs:
+        assert r["passed"], {k: v for k, v in r.items() if k != "transcript"}
+    logs = [upto(r["transcript"], r"fault=1 oc=1[^\n]*\n") for r in runs]
+    assert logs[0] == logs[1], "two deterministic runs must give byte-identical UART output"
+    gpio_step = next(s for s in runs[0]["steps"] if s["action"] == "expect_gpio")
+    assert gpio_step["result"]["freq_hz"] == pytest.approx(2.0, abs=0.01)
+
+
+async def test_gpio_tools_trace_read_and_pulse():
+    tc = {"model": "max31855", "name": "tc", "bus": "spi3", "cs": 0, "waveform": {"tc_c": 20.0}}
+    k = {"model": "max6675", "name": "k", "bus": "spi2", "cs": 0, "cs_gpio": 15}
+    async with Client(create_server()) as c:
+        s = await call(c, "emu_start", project_dir=str(IO), deterministic=True, sensors=[tc, k],
+                       gpio=[{"pin": 27, "default": 1}])
+        sid = s["session_id"]
+        try:
+            assert s["gpio"]["declared_inputs"] == [{"pin": 15, "default": 1}, {"pin": 27, "default": 1}]
+            assert (await call(c, "uart_expect", session_id=sid, pattern="io_probe ready", timeout_s=60))["matched"]
+            await call(c, "emu_run_for", session_id=sid, virtual_ms=1700)
+            tr = await call(c, "gpio_trace", session_id=sid, pin=25)
+            rising = [e["t_ms"] for e in tr["edges"] if e["level"] == 1]
+            # the first rising edge is the blink task starting; after it the LED toggles every 250 ms
+            assert len(rising) >= 4 and all(abs(b - a - 500.0) < 1.0 for a, b in zip(rising[1:], rising[2:]))
+            assert (await call(c, "gpio_read", session_id=sid, pin=27))["level"] == 1
+            now = tr["virtual_ms_now"]
+            p = await call(c, "gpio_pulse", session_id=sid, pin=27, width_ms=20, at_ms=now + 100)
+            assert p["deterministic"] is True and p["events"][0]["level"] == 0
+            await call(c, "emu_continue", session_id=sid)
+            assert (await call(c, "uart_expect", session_id=sid, pattern=r"button pressed at \d+ ms, level 0",
+                               timeout_s=30))["matched"]
+            bad = await c.call_tool("gpio_set", {"session_id": sid, "pin": 24, "level": 1})
+            assert bad.is_error and "not an ESP32 GPIO pad" in bad.content[0].text
+        finally:
+            await call(c, "emu_stop", session_id=sid)

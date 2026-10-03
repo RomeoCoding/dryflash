@@ -1,0 +1,264 @@
+From d1ce7e25d160fe660421a1aef1df05d6fbb50631 Mon Sep 17 00:00:00 2001
+From: Romeo Mattar <romeomat.work@gmail.com>
+Date: Sat, 3 Oct 2026 12:15:59 +0000
+Subject: [PATCH] hw/sensor: add ssi-sim-sensor, a host-driven generic SPI
+ sensor
+
+Many sensors sit on SPI rather than I2C: thermocouple converters such as
+the MAX31855, SPI ADCs, and register-mapped chips such as the BME280 or
+the ADXL345 in SPI mode.  Add an SPI front end to the host-fed register
+file of sim-regfile, with two protocols selected by "mode":
+
+ - frame: a read-only shift register; each byte of a chip-select frame
+   returns the next register-file byte from offset 0 (MAX31855,
+   MAX6675);
+ - register: the first byte is an address with a read bit (read-bit,
+   read-high), an address mask and an optional multiple-byte bit
+   (multi-bit) that enables auto-increment.
+
+Chip select is active low and starts a frame; guest writes are reported
+to the host when it is released.  A "cs-gpio" property records a GPIO
+pad that a board should wire to chip select, for drivers that toggle CS
+by hand instead of using the controller's CS output.
+
+Signed-off-by: Romeo Mattar <romeomat.work@gmail.com>
+---
+ hw/sensor/Kconfig          |   9 ++
+ hw/sensor/meson.build      |   4 +-
+ hw/sensor/ssi_sim_sensor.c | 191 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 203 insertions(+), 1 deletion(-)
+ create mode 100644 hw/sensor/ssi_sim_sensor.c
+
+diff --git a/hw/sensor/Kconfig b/hw/sensor/Kconfig
+index 80fce28..a3f6d54 100644
+--- a/hw/sensor/Kconfig
++++ b/hw/sensor/Kconfig
+@@ -44,7 +44,16 @@ config MAX31785
+     bool
+     depends on PMBUS
+ 
++config SIM_REGFILE
++    bool
++
+ config I2C_SIM_SENSOR
+     bool
+     depends on I2C
+     default y if I2C_DEVICES
++    select SIM_REGFILE
++
++config SSI_SIM_SENSOR
++    bool
++    depends on SSI
++    select SIM_REGFILE
+diff --git a/hw/sensor/meson.build b/hw/sensor/meson.build
+index e3ab5ee..0ba3844 100644
+--- a/hw/sensor/meson.build
++++ b/hw/sensor/meson.build
+@@ -8,4 +8,6 @@ system_ss.add(when: 'CONFIG_MAX34451', if_true: files('max34451.c'))
+ system_ss.add(when: 'CONFIG_LSM303DLHC_MAG', if_true: files('lsm303dlhc_mag.c'))
+ system_ss.add(when: 'CONFIG_ISL_PMBUS_VR', if_true: files('isl_pmbus_vr.c'))
+ system_ss.add(when: 'CONFIG_MAX31785', if_true: files('max31785.c'))
+-system_ss.add(when: 'CONFIG_I2C_SIM_SENSOR', if_true: files('i2c_sim_sensor.c', 'sim_regfile.c'))
++system_ss.add(when: 'CONFIG_SIM_REGFILE', if_true: files('sim_regfile.c'))
++system_ss.add(when: 'CONFIG_I2C_SIM_SENSOR', if_true: files('i2c_sim_sensor.c'))
++system_ss.add(when: 'CONFIG_SSI_SIM_SENSOR', if_true: files('ssi_sim_sensor.c'))
+diff --git a/hw/sensor/ssi_sim_sensor.c b/hw/sensor/ssi_sim_sensor.c
+new file mode 100644
+index 0000000..0f538e2
+--- /dev/null
++++ b/hw/sensor/ssi_sim_sensor.c
+@@ -0,0 +1,191 @@
++/*
++ * Host-driven generic SPI sensor device ("ssi-sim-sensor")
++ *
++ * An SPI peripheral in front of the host-fed register file of sim_regfile.c
++ * (contents, banks, virtual-time updates and host protocol are described
++ * there).  Chip select is active low; asserting it starts a frame.  Two
++ * protocols cover most SPI sensors:
++ *
++ *  - mode=frame: a read-only shift register.  Each byte clocked during a
++ *    frame returns the next byte of the register file from offset 0; MOSI
++ *    is ignored.  Thermocouple converters (MAX31855, MAX6675) and simple
++ *    SPI ADCs work this way: the host keeps the current frame at offset 0.
++ *  - mode=register: the first byte of a frame is an address.  If
++ *    (byte & read-bit) is non-zero (or zero, with read-high=false) the
++ *    frame reads, otherwise it writes; the register address is
++ *    (byte & addr-mask) * stride, and the pointer advances after every
++ *    data byte.  With multi-bit set, it only advances when
++ *    (byte & multi-bit) is set, as on chips with a "multiple byte" flag
++ *    (ADXL345); otherwise it stays on the same register.
++ *
++ * Which line drives chip select is the board's business: the SPI
++ * controller's CS output, or a GPIO pad for drivers that toggle CS by
++ * hand.  The "cs-gpio" property records the pad a board should use (-1:
++ * the controller's CS line selected by "cs").
++ *
++ * Copyright (c) 2026 Romeo Mattar
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/ssi/ssi.h"
++#include "hw/sensor/sim_regfile.h"
++#include "migration/vmstate.h"
++#include "qom/object.h"
++
++#define TYPE_SSI_SIM_SENSOR "ssi-sim-sensor"
++OBJECT_DECLARE_SIMPLE_TYPE(SSISimSensorState, SSI_SIM_SENSOR)
++
++struct SSISimSensorState {
++    SSIPeripheral parent_obj;
++
++    SimRegFile rf;
++
++    /* Frame state */
++    bool selected;
++    bool have_addr;
++    bool reading;
++    bool advance;
++    uint8_t pointer;            /* byte offset */
++
++    /* Properties */
++    char *mode;
++    bool register_mode;
++    uint8_t read_bit;
++    bool read_high;
++    uint8_t addr_mask;
++    uint8_t multi_bit;
++    int32_t cs_gpio;
++};
++
++static int ssi_sim_set_cs(SSIPeripheral *dev, bool level)
++{
++    SSISimSensorState *s = SSI_SIM_SENSOR(dev);
++
++    if (!level) {
++        /* Asserted: a new frame */
++        s->selected = true;
++        s->have_addr = false;
++        s->pointer = 0;
++    } else if (s->selected) {
++        s->selected = false;
++        sim_regfile_end_transfer(&s->rf);
++    }
++    return 0;
++}
++
++static uint32_t ssi_sim_transfer(SSIPeripheral *dev, uint32_t val)
++{
++    SSISimSensorState *s = SSI_SIM_SENSOR(dev);
++    uint8_t mosi = val, miso = 0;
++
++    if (!s->register_mode) {
++        return sim_regfile_read(&s->rf, s->pointer++);
++    }
++    if (!s->have_addr) {
++        s->have_addr = true;
++        s->reading = !!(mosi & s->read_bit) == s->read_high;
++        s->advance = !s->multi_bit || (mosi & s->multi_bit);
++        s->pointer = (mosi & s->addr_mask) * s->rf.stride;
++        return 0;
++    }
++    if (s->reading) {
++        miso = sim_regfile_read(&s->rf, s->pointer);
++    } else {
++        sim_regfile_write(&s->rf, s->pointer, mosi);
++    }
++    if (s->advance) {
++        s->pointer++;
++    }
++    return miso;
++}
++
++static void ssi_sim_realize(SSIPeripheral *dev, Error **errp)
++{
++    SSISimSensorState *s = SSI_SIM_SENSOR(dev);
++
++    if (!s->mode || !strcmp(s->mode, "frame")) {
++        s->register_mode = false;
++    } else if (!strcmp(s->mode, "register")) {
++        s->register_mode = true;
++        if (!s->read_bit) {
++            error_setg(errp, "mode=register needs a non-zero read-bit");
++            return;
++        }
++    } else {
++        error_setg(errp, "mode must be 'frame' or 'register'");
++        return;
++    }
++    if (s->cs_gpio < -1) {
++        error_setg(errp, "cs-gpio must be a pad number or -1");
++        return;
++    }
++    sim_regfile_realize(&s->rf, errp);
++}
++
++static void ssi_sim_unrealize(DeviceState *dev)
++{
++    SSISimSensorState *s = SSI_SIM_SENSOR(dev);
++
++    sim_regfile_unrealize(&s->rf);
++}
++
++static void ssi_sim_reset_hold(Object *obj, ResetType type)
++{
++    SSISimSensorState *s = SSI_SIM_SENSOR(obj);
++
++    /* Register contents belong to the host-side model and survive a reset */
++    s->selected = false;
++    s->have_addr = false;
++    s->pointer = 0;
++    s->rf.wr_first = -1;
++}
++
++static const VMStateDescription vmstate_ssi_sim_sensor = {
++    .name = TYPE_SSI_SIM_SENSOR,
++    /* Pending host updates live outside the guest state */
++    .unmigratable = 1,
++};
++
++static Property ssi_sim_properties[] = {
++    DEFINE_SIM_REGFILE_PROPERTIES(SSISimSensorState, rf),
++    DEFINE_PROP_STRING("mode", SSISimSensorState, mode),
++    DEFINE_PROP_UINT8("read-bit", SSISimSensorState, read_bit, 0x80),
++    DEFINE_PROP_BOOL("read-high", SSISimSensorState, read_high, true),
++    DEFINE_PROP_UINT8("addr-mask", SSISimSensorState, addr_mask, 0x7f),
++    DEFINE_PROP_UINT8("multi-bit", SSISimSensorState, multi_bit, 0),
++    DEFINE_PROP_INT32("cs-gpio", SSISimSensorState, cs_gpio, -1),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void ssi_sim_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++    SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
++
++    dc->desc = "Generic SPI sensor fed by a host over a chardev";
++    dc->unrealize = ssi_sim_unrealize;
++    dc->vmsd = &vmstate_ssi_sim_sensor;
++    rc->phases.hold = ssi_sim_reset_hold;
++    k->realize = ssi_sim_realize;
++    k->transfer = ssi_sim_transfer;
++    k->set_cs = ssi_sim_set_cs;
++    k->cs_polarity = SSI_CS_LOW;
++    device_class_set_props(dc, ssi_sim_properties);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static const TypeInfo ssi_sim_types[] = {
++    {
++        .name          = TYPE_SSI_SIM_SENSOR,
++        .parent        = TYPE_SSI_PERIPHERAL,
++        .instance_size = sizeof(SSISimSensorState),
++        .class_init    = ssi_sim_class_init,
++    },
++};
++
++DEFINE_TYPES(ssi_sim_types)
+-- 
+2.43.0
+
