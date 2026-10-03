@@ -302,3 +302,45 @@ capture, UART over TCP; Verus is the acceptance test).
 - **The on-chip ADC, SPI DMA and SPI slave mode.** Not modelled. Step 0 showed DMA transfers return
   `ESP_OK` without data, so firmware under test must use `SPI_DMA_DISABLED`; that limit is
   documented rather than modelled, because sensor transactions fit in the 64-byte buffer.
+
+### M5d-f: display, UART over TCP, the Verus example, measurements
+
+- **Display text is read with the Adafruit-GFX classic 5x7 font only** (sizes 1-4, exact glyph
+  match with a blank cell around it). It is robust for that font, which is what Adafruit_SSD1306
+  and most ESP-IDF examples use by default; other fonts are not read and the tools say so. The
+  snapshot also returns text art and an optional PNG for anything else.
+- **Each I2C write transfer is reported whole (stream mode), and the host decodes the SSD1306.**
+  Folding the stream into the 256-byte register file (the step-0 finding) would lose the frame
+  buffer. `examples/verus_pod` flushes in 31-byte transfers with a control byte each, as the
+  Adafruit library does on ESP32.
+- **Host interactions with a running sliced session wait for the next slice stop.** Found when
+  the Verus scenario diverged in 1 run of ~14: clock reads and sync round trips sent into the
+  running VM (the M3 rule, broken by the new display and GPIO code) shift the dual-core
+  interleaving. Now `display_snapshot`, `gpio_*`, `sensor_set` and `emu_run_for` on a running
+  board do their QEMU traffic at the next stop (at most 100 ms of virtual time ahead), and "now"
+  is that stop. Side effect: `emu_run_for` on a running board starts counting there.
+  Measured after the change: 24/24 byte-identical Verus runs on an idle host, **15/16 under 12
+  CPU burners**; the one divergent run differs in one `vib_rms_g` digit right after the pairing
+  OLED flush. Not resolved; candidates are QEMU-side (blocking chardev writes from the vCPU
+  thread during the stream, or a remaining icount race). The DoD's two-run check passes.
+- **UART over TCP tees instead of handing the console over.** The agent keeps `uart_read`,
+  `uart_expect` and crash decoding while the Verus host app reads the same bytes. Writes from the
+  agent and from TCP clients are delivered whole, interleaved in arrival order; a client that stops
+  reading is dropped after 1 MB of backlog rather than stalling the console.
+- **Deterministic-mode cost with the new devices** (emu_run_for 5 s after 1 s of boot, N=10 each,
+  same image and host, 2026-10-03): `vibration_monitor` (one ADXL345) 0.58 +- 0.03 wall s per
+  virtual s; `verus_pod` (MPU-6050 at 1 kHz x 16 banks, ADS1115 at 860 Hz x 64 banks, MAX31855,
+  SSD1306, GPIO) 1.87 +- 0.35. The extra cost is the register traffic (about 55 000 updates per
+  virtual second) plus the firmware's 1.36 kHz of I2C polling. Note the spread: the first runs
+  of a batch were slowest (2.5 vs 1.5).
+- **Arduino compatibility (report only, experiments/m5_arduino):** PlatformIO espressif32 7.1.3
+  (Arduino-ESP32 2.0.17), Adafruit MAX31855 1.4.2 / BusIO 1.17.4. A merged 4 MB image of a sketch
+  using `Wire` (MPU-6050, ADS1115 at 0x49), `Adafruit_MAX31855` with the hardware-SPI constructor,
+  `digitalWrite` (LED) and `digitalRead` (button, `INPUT_PULLUP`) runs in `emu_start(image=...,
+  elf=...)`: every value read matches the injection (0.2500 g, 1.6500 V, 31.25 degC, button 1 then
+  0), with the MAX31855 declared either with `cs_gpio: 5` or on controller CS (one 4-byte
+  transaction per read, so both frame correctly, as step 0 predicted). Not checked: BLE (not
+  emulated), sketches that put several SPI devices on one bus without `cs_gpio`, and Arduino-ESP32
+  3.x under PlatformIO (the step-0 source reading was 3.3.12). Conclusion for the Verus team:
+  they can keep Arduino for emulated testing; declare the thermocouple with `cs_gpio: 5`, run
+  SPI without DMA (the Arduino core does), and use the USB-serial path instead of BLE.

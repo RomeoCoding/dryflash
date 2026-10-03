@@ -1,5 +1,6 @@
 """Sensor injection end to end. Needs the sensors image (patched QEMU): pytest -m sensors."""
 
+import asyncio
 import re
 
 import pytest
@@ -78,7 +79,7 @@ async def test_exact_run_for_and_sensor_set_while_paused():
                                           (await call(c, "uart_read", session_id=sid, max_bytes=65536))["text"]))
             assert ticks_before >= 5
             st = await call(c, "sensor_set", session_id=sid, sensor="adc", values={"ain0": 2.25})
-            assert st["applies_from_ms"] == pytest.approx(1750.0)
+            assert st["applies_from_ms"] == pytest.approx(r2["virtual_time_ns"] / 1e6)  # "now" while paused
             await call(c, "emu_continue", session_id=sid)
             m = await call(c, "uart_expect", session_id=sid, pattern=r"tick \d+ ain0=2\.2500", timeout_s=30,
                            cursor=before)
@@ -183,5 +184,56 @@ async def test_gpio_tools_trace_read_and_pulse():
                                timeout_s=30))["matched"]
             bad = await c.call_tool("gpio_set", {"session_id": sid, "pin": 24, "level": 1})
             assert bad.is_error and "not an ESP32 GPIO pad" in bad.content[0].text
+        finally:
+            await call(c, "emu_stop", session_id=sid)
+
+
+VERUS = REPO / "examples" / "verus_pod"
+
+
+async def test_verus_pod_scenario_twice_byte_identical():
+    async with Client(create_server()) as c:
+        runs = [await call(c, "test_run", project_dir=str(VERUS), scenario_file="scenario.yaml") for _ in range(2)]
+    for r in runs:
+        assert r["passed"], {k: v for k, v in r.items() if k != "transcript"}
+    logs = [r["transcript"] for r in runs]
+    assert logs[0] == logs[1], "two deterministic runs must give byte-identical UART output"
+    code = re.search(r'"code":"(\d{6})"', logs[0]).group(1)
+    shown = runs[0]["steps"][-1]["text"]
+    assert shown == ["PAIR", code], "the OLED must show the code the firmware printed"
+
+
+async def test_verus_pod_through_the_mcp_tools_and_the_uart_tee():
+    import json
+
+    import yaml
+    scn = yaml.safe_load((VERUS / "scenario.yaml").read_text())
+    async with Client(create_server()) as c:
+        s = await call(c, "emu_start", project_dir=str(VERUS), deterministic=True, sensors=scn["sensors"],
+                       gpio=scn["gpio"], uart_tcp_port=47321)
+        sid = s["session_id"]
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 47321), 10)
+            line = b""
+            while b'"type":"features"' not in line:  # what a host app on socket://host:47321 reads
+                line = await asyncio.wait_for(reader.readline(), 120)
+            frame = json.loads(line)
+            assert set(frame["features"]) == {"vib_rms_g", "hall_ac_mv", "temp_c"}
+            assert (await call(c, "emu_status", session_id=sid))["uart_tcp_clients"] == 1
+            writer.write(b"ping\n")  # host-to-pod bytes reach the guest's RX without disturbing it
+            await writer.drain()
+            await call(c, "sensor_set", session_id=sid, sensor="tc", values={"fault": "open"})
+            assert (await call(c, "uart_expect", session_id=sid, pattern='"event":"detached","id":"tmp_max31855_cs5"',
+                               timeout_s=60))["matched"]
+            await call(c, "gpio_pulse", session_id=sid, pin=27, width_ms=80)
+            m = await call(c, "uart_expect", session_id=sid, pattern=r'"code":"(\d{6})"', timeout_s=60)
+            await call(c, "emu_run_for", session_id=sid, virtual_ms=300)  # the code is printed before the flush
+            snap = await call(c, "display_snapshot", session_id=sid, sensor="oled", png=True)
+            assert snap["on"] and snap["text"] == ["PAIR", m["groups"][0]] and snap["png"].endswith(".png")
+            await call(c, "emu_run_for", session_id=sid, virtual_ms=1000)
+            edges = (await call(c, "gpio_trace", session_id=sid, pin=25))["edges"]
+            await call(c, "emu_continue", session_id=sid)
+            assert len(edges) >= 4
+            writer.close()
         finally:
             await call(c, "emu_stop", session_id=sid)

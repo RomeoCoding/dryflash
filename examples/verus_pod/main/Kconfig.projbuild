@@ -1,0 +1,8 @@
+menu "Verus pod"
+    config VERUS_ADS1115_ADDR
+        hex "ADS1115 I2C address"
+        default 0x48
+        help
+            0x48 with ADDR to GND, as on the Verus board. dryflash's emulated esp32 machine has a
+            TMP105 at 0x48 on I2C0, so sdkconfig.defaults selects 0x49 (ADDR to VDD) for emulation.
+endmenu

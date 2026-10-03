@@ -214,7 +214,9 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         """Let the CPU run for virtual_ms of emulated time, then pause it.
 
         Exact (to the nanosecond of virtual time) in deterministic sessions on the sensors image;
-        otherwise an approximation from wall time, reported as exact=false. Next: uart_read, then
+        otherwise an approximation from wall time, reported as exact=false. On a running board with
+        sensors or declared gpio, counting starts at the next virtual-time slice stop (at most
+        100 ms ahead) so that the stop point is the same on every run; virtual_time_ns is exact. Next: uart_read, then
         emu_continue to keep running.
         """
         if virtual_ms <= 0:
@@ -445,9 +447,11 @@ def create_server(manager: SessionManager | None = None) -> MCPServer:
         """Drive a GPIO pad's external level (0 or 1) from virtual time at_ms (default: now).
 
         Use it for inputs: buttons, data-ready lines, a sensor's interrupt pin. The level is what
-        the pad reads while the firmware does not drive it as an output. For reproducible timing,
-        declare the pin in emu_start(gpio=[...]) and give at_ms ahead of the current virtual time,
-        or call it while paused; the result says whether delivery was deterministic.
+        the pad reads while the firmware does not drive it as an output. In a session with declared
+        gpio pins or sensors, a running board is touched only at its next virtual-time slice stop
+        (at most 100 ms of virtual time ahead), so "now" means that stop and the timing is
+        reproducible; at_ms in the past applies at that point. Without declarations the change
+        lands at a host-dependent moment; the result's "deterministic" says which.
         Next: uart_expect for the firmware's reaction, or gpio_trace.
         """
         return await _io_hub(session_id).gpio_events([(at_ms, pin, level)])

@@ -14,7 +14,7 @@ import asyncio
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from ..qmp import QmpError
 from .display import read_text, text_art, write_png
@@ -90,6 +90,7 @@ class SensorHub:
         self.refills = 0
         self._closing = False
         self.stop_error: str | None = None
+        self._deferred: list[list] = []  # [fn, future, taken]: work for the next slice stop
 
     @property
     def slicing(self) -> bool:
@@ -187,6 +188,7 @@ class SensorHub:
         async with self._lock:
             if self.slicing and ns >= self.horizon:
                 await self._refill(ns + CHUNK_NS)
+            await self._run_deferred(ns)
             if self.user_target is not None and ns >= self.user_target:
                 self.user_target = None
                 self.session.state = "paused"
@@ -210,17 +212,71 @@ class SensorHub:
         assert self.clock is not None
         return await self.clock.now()
 
+    # ----- talking to QEMU without disturbing a running guest ---------------------------------------
+    # Any message a host sends into a running VM (even a clock read) is handled by QEMU's main loop,
+    # which kicks the vCPU loop at a host-dependent moment; on the dual-core esp32 that shifts how
+    # the two cores interleave, and a deterministic run stops being byte-identical. So while a
+    # sliced session runs, every interaction waits for the next slice stop (at most CHUNK_NS of
+    # virtual time away), where the VM is paused and "now" is the exact stop time.
+    def _deferring(self) -> bool:
+        return self.slicing and self.session.state == "running" and self.clock is not None
+
+    async def _while_stopped(self, fn: Callable[[int], Awaitable[Any]], timeout: float = 120.0) -> Any:
+        """Await fn(now_ns) at a moment the VM is stopped (or as soon as possible if it never stops)."""
+        loop = asyncio.get_running_loop()
+        if self._deferring():
+            fut = loop.create_future()
+            entry = [fn, fut, False]  # fn, result, taken by the stop handler
+            self._deferred.append(entry)
+            deadline = loop.time() + timeout
+            while not fut.done():
+                try:
+                    return await asyncio.wait_for(asyncio.shield(fut), 0.2)
+                except asyncio.TimeoutError:
+                    pass
+                if not entry[2] and (not self._deferring() or loop.time() > deadline):
+                    self._deferred.remove(entry)  # paused, stopped or stuck: no slice stop coming
+                    break
+            else:
+                return fut.result()
+        async with self._lock:
+            return await fn(await self.now())
+
+    async def _run_deferred(self, ns: int) -> None:
+        pending, self._deferred = self._deferred, []
+        for entry in pending:
+            fn, fut, _ = entry
+            entry[2] = True
+            try:
+                result = await fn(ns)
+            except Exception as e:  # handed to the caller, the stop handler carries on
+                if not fut.done():
+                    fut.set_exception(e)
+            else:
+                if not fut.done():
+                    fut.set_result(result)
+
     async def run_until_offset(self, delta_ns: int, timeout: float = 600.0) -> int:
-        """Run until the virtual clock has advanced by delta_ns, then leave the VM paused."""
-        now = await self.now()
-        self.user_target = now + delta_ns
-        self._user_event.clear()
-        self.user_paused = False
-        await self.arm()
-        status = await self.session.qmp.execute("query-status")
-        if not status.get("running"):
-            await self.session.qmp.execute("cont")
-        self.session.state = "running"
+        """Run until the virtual clock has advanced by delta_ns, then leave the VM paused.
+
+        On a running sliced session the count starts at the next slice stop, so the stop point is
+        the same on every run.
+        """
+        async def set_target(now: int) -> int:
+            self.user_target = now + delta_ns
+            self._user_event.clear()
+            self.user_paused = False
+            return now
+
+        if self._deferring():
+            now = await self._while_stopped(set_target)  # the stop handler then arms and continues
+        else:
+            now = await set_target(await self.now())
+            await self.arm()
+            status = await self.session.qmp.execute("query-status")
+            if not status.get("running"):
+                await self.session.qmp.execute("cont")
+            self.session.state = "running"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while not self._user_event.is_set() or self.stop_error:
@@ -251,19 +307,22 @@ class SensorHub:
         spec.update(waveform or {})
         if not spec:
             raise SensorSpecError("give values (channel -> number or waveform) to apply")
-        from_ns = round(at_ms * 1e6) if at_ms is not None else await self.now()
-        async with self._lock:
+
+        async def apply(now: int) -> dict:
+            from_ns = round(at_ms * 1e6) if at_ms is not None else now
             m.schedule(from_ns, spec)
             resent = 0
             if from_ns < self.horizon:
                 # Samples already queued inside QEMU for [from_ns, horizon) are superseded: equal
                 # timestamps apply in arrival order, so re-sent samples win.
-                lines = sample_lines(m, from_ns, self.horizon)
+                lines = sample_lines(m, max(from_ns, now), self.horizon)
                 await self.links[self.models.index(m)].send(lines)
                 await self.links[self.models.index(m)].sync()
                 resent = len(lines)
-        return {"sensor": sensor, "applies_from_ms": from_ns / 1e6, "channels": sorted(spec),
-                "resent_updates": resent}
+            return {"sensor": sensor, "applies_from_ms": from_ns / 1e6, "channels": sorted(spec),
+                    "resent_updates": resent}
+
+        return await self._while_stopped(apply)
 
     async def stream(self, sensor: str, waveform: dict[str, Any], at_ms: float | None = None) -> dict:
         return await self.set(sensor, waveform=waveform, at_ms=at_ms)
@@ -276,34 +335,27 @@ class SensorHub:
 
     async def gpio_events(self, events: list[tuple[float | None, Any, int]]) -> dict:
         """Apply pad levels [(at_ms or None for now, pin, level)] from outside the chip."""
-        gpio = self._require_gpio()
-        async with self._lock:
-            now = await self.now()
+        self._require_gpio()
+        for _, pin, _ in events:
+            check_pad(pin)
+        deterministic = self.slicing or self.session.state != "running"
+
+        async def send(now: int) -> list[tuple[int, int, int]]:
             planned = []
             for at_ms, pin, level in events:
-                pad = check_pad(pin)
                 t = round(at_ms * 1e6) if at_ms is not None else now
-                planned.append((max(t, now), pad, 1 if level else 0))
-            running = self.session.state == "running"
-            # Deterministic only if QEMU is touched while the VM is stopped: either it is paused now,
-            # or every event lies beyond the horizon and goes out with the next slice.
-            if not running:
-                mode = "sent while paused"
-                await self.gpio_link.send([GpioLink.level_line(*e) for e in planned])
-                await self.gpio_link.sync()
-            elif self.slicing and all(t >= self.horizon for t, _, _ in planned):
-                mode = "queued for the next slice"
-                for e in planned:
-                    gpio.schedule(*e)
-            else:
-                mode = "sent while running"
-                await self.gpio_link.send([GpioLink.level_line(*e) for e in planned])
-                await self.gpio_link.sync()
-        return {"events": [{"pin": p, "level": lv, "at_ms": t / 1e6} for t, p, lv in planned],
-                "deterministic": mode != "sent while running", "delivery": mode,
-                **({"note": "the board was running and the time was not beyond the next slice; declare the "
-                            "pin in gpio at emu_start and give at_ms ahead of the current time (or pause "
-                            "first) for reproducible timing"} if mode == "sent while running" else {})}
+                planned.append((max(t, now), check_pad(pin), 1 if level else 0))
+            await self.gpio_link.send([GpioLink.level_line(*e) for e in planned])
+            await self.gpio_link.sync()
+            return planned
+
+        planned = await self._while_stopped(send)
+        out = {"events": [{"pin": p, "level": lv, "at_ms": t / 1e6} for t, p, lv in planned],
+               "deterministic": deterministic}
+        if not deterministic:
+            out["note"] = ("sent into the running board at a host-dependent moment; declare the pin in "
+                           "emu_start(gpio=[...]) for reproducible timing")
+        return out
 
     async def gpio_pulse(self, pin: Any, width_ms: float, at_ms: float | None = None,
                          level: int | None = None) -> dict:
@@ -312,24 +364,37 @@ class SensorHub:
         if width_ms <= 0:
             raise GpioSpecError("width_ms must be positive")
         active = (1 - gpio.default_of(pad)) if level is None else (1 if level else 0)
-        start = at_ms if at_ms is not None else (await self.now()) / 1e6
+        if at_ms is not None:
+            return await self.gpio_events([(at_ms, pad, active), (at_ms + width_ms, pad, 1 - active)])
+
+        async def at_stop(now: int) -> float:
+            return now / 1e6
+
+        start = await self._while_stopped(at_stop)  # "now" = the next slice stop on a running board
         return await self.gpio_events([(start, pad, active), (start + width_ms, pad, 1 - active)])
 
     async def gpio_read(self, pin: Any) -> dict:
         gpio = self._require_gpio()
         pad = check_pad(pin)
-        await self.gpio_link.sync()
-        now = await self.now()
-        return {"pin": pad, "level": gpio.level(pad, now), "virtual_ms": now / 1e6,
-                "declared_default": gpio.defaults.get(pad)}
+
+        async def read(now: int) -> dict:
+            await self.gpio_link.sync()  # every change report up to now has been read
+            return {"pin": pad, "level": gpio.level(pad, now), "virtual_ms": now / 1e6,
+                    "declared_default": gpio.defaults.get(pad)}
+
+        return await self._while_stopped(read)
 
     async def gpio_trace(self, pin: Any, cursor: int = 0, max_edges: int = 200) -> dict:
         gpio = self._require_gpio()
         pad = check_pad(pin)
-        await self.gpio_link.sync()
-        out = gpio.trace(pad, cursor, max_edges)
-        out["virtual_ms_now"] = (await self.now()) / 1e6
-        return out
+
+        async def trace(now: int) -> dict:
+            await self.gpio_link.sync()
+            out = gpio.trace(pad, cursor, max_edges)
+            out["virtual_ms_now"] = now / 1e6
+            return out
+
+        return await self._while_stopped(trace)
 
     async def gpio_window(self, pin: Any, window_ms: float) -> dict:
         """Run exactly window_ms of virtual time (then stay paused) and summarise the pad over it."""
@@ -337,8 +402,8 @@ class SensorHub:
         pad = check_pad(pin)
         delta = round(window_ms * 1e6)
         end = await self.run_until_offset(delta)
-        start = end - delta  # the window starts where run_until_offset read the clock
-        await self.gpio_link.sync()
+        start = end - delta
+        await self.gpio_link.sync()  # paused here
         edges = gpio.edges(pad, start, end)
         stats = window_stats(edges, start, end)
         stats.update(pin=pad, level_at_end=gpio.level(pad, end))
@@ -349,17 +414,21 @@ class SensorHub:
         m = self.model(sensor)
         if not isinstance(m, Ssd1306):
             raise SensorSpecError(f"sensor {sensor!r} is a {m.model}, not a display (ssd1306)")
-        await self.links[self.models.index(m)].sync()  # every write transfer so far has been decoded
-        img = m.display.image()
-        out = m.display.describe()
-        out.update(text_art(img))
-        out["text"] = read_text(img)
-        out["virtual_ms"] = (await self.now()) / 1e6
-        out["last_write_ms"] = m.last_write_ns / 1e6 if m.last_write_ns is not None else None
-        if png_path is not None:
-            write_png(img, png_path)
-            out["png"] = str(png_path)
-        return out
+
+        async def snap(now: int) -> dict:
+            await self.links[self.models.index(m)].sync()  # every write transfer so far is decoded
+            img = m.display.image()
+            out = m.display.describe()
+            out.update(text_art(img))
+            out["text"] = read_text(img)
+            out["virtual_ms"] = now / 1e6
+            out["last_write_ms"] = m.last_write_ns / 1e6 if m.last_write_ns is not None else None
+            if png_path is not None:
+                write_png(img, png_path)
+                out["png"] = str(png_path)
+            return out
+
+        return await self._while_stopped(snap)
 
     def describe(self) -> list[dict]:
         out = []
@@ -381,6 +450,10 @@ class SensorHub:
 
     async def close(self) -> None:
         self._closing = True
+        for _, fut, _ in self._deferred:
+            if not fut.done():
+                fut.set_exception(LinkError("session closed"))
+        self._deferred = []
         tasks = list(self._stop_tasks)
         for t in tasks:
             t.cancel()

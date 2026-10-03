@@ -116,3 +116,10 @@ If 0006 goes in too, add this paragraph and say plainly that it has no standalon
 > requested. The patch adds `qemu_vmstop_pending()` (non-consuming) and skips the warp while a stop
 > or debug request is pending. We hit this with a device that requests a stop from a
 > `QEMU_CLOCK_VIRTUAL` timer; we do not yet have a reproducer that runs on stock esp-develop.
+
+## Later candidates from M5 (not yet prepared as PRs)
+
+See docs/M5_REPORT.md, "Patches ready to propose upstream". In short: 0011 (SPI command phase),
+0013 + 0018 (SPI completion IRQ and the interrupt matrix keeping source levels), 0009 (GPIO
+registers), and the bus part of 0016. 0012 duplicates espressif/qemu PR #144 and must not be sent.
+None of them has been rebased onto esp-develop head or A/B-tested there yet.

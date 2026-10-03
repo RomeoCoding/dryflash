@@ -2,8 +2,10 @@
 
 An MCP server that lets AI agents develop ESP32 firmware without a board. It builds ESP-IDF
 projects, runs them in Espressif's QEMU, and drives them the way a developer would: serial console,
-GDB, crash decoding. It also feeds realistic sensor data (accelerometer, ADC or any register-mapped
-chip) over the emulated I2C bus, on a virtual timeline that makes runs repeatable byte for byte.
+GDB, crash decoding. It also feeds realistic sensor data (accelerometer, IMU, ADC, thermocouple or
+any register-mapped chip) over the emulated I2C and SPI buses, drives and traces GPIO pads, and
+reads what the firmware draws on an SSD1306 OLED, on a virtual timeline that makes runs repeatable
+byte for byte.
 
 ```
 agent ──MCP/stdio──▶ dryflash (Docker: ESP-IDF v6.1 + QEMU + GDB)
@@ -11,7 +13,9 @@ agent ──MCP/stdio──▶ dryflash (Docker: ESP-IDF v6.1 + QEMU + GDB)
                        ├─ emu_*  uart_* ─▶ QEMU esp32 / esp32c3 / esp32s3  (QMP, UART socket)
                        ├─ gdb_*          ─▶ xtensa/riscv GDB via GDB/MI ─▶ QEMU gdbstub
                        ├─ decode_panic   ─▶ Guru Meditation / abort / WDT → symbolized cause
-                       ├─ sensor_*       ─▶ I2C sensor devices in QEMU, fed from Python models
+                       ├─ sensor_*       ─▶ I2C/SPI sensor devices in QEMU, fed from Python models
+                       ├─ gpio_*         ─▶ pad levels in, pad changes out, on the virtual clock
+                       ├─ display_snapshot ─▶ SSD1306 frame buffer → text art, PNG, decoded text
                        └─ test_run       ─▶ YAML scenario → pass/fail + transcript
 ```
 
@@ -92,7 +96,7 @@ the model: what it returns, when to call it, and what to call next.
 | tool | what it does |
 |---|---|
 | `project_build(project_dir, target, clean)` | `idf.py build` out of tree. Returns ok, errors/warnings as `{file, line, column, message}` (errors first), binary and memory sizes. |
-| `emu_start(project_dir \| image, target, deterministic, wait_for_gdb, sensors, reboot, watchdogs, icount_shift, qemu_args)` | Starts QEMU with the firmware and returns a session. Builds first if the project was never built. |
+| `emu_start(project_dir \| image, target, deterministic, wait_for_gdb, sensors, gpio, uart_tcp_port, reboot, watchdogs, icount_shift, qemu_args)` | Starts QEMU with the firmware and returns a session. Builds first if the project was never built. |
 | `emu_stop`, `emu_status`, `emu_reset` | Stop (and clean up), inspect, or power-cycle a session. The reset keeps the flash, so NVS persists. |
 | `emu_pause`, `emu_continue`, `emu_run_for(virtual_ms)` | Run control. `emu_run_for` is exact to the nanosecond of virtual time on the sensors image. |
 | `uart_read(cursor, max_bytes)` | Cursor-based console reads (MCP has no push). |
@@ -102,12 +106,15 @@ the model: what it returns, when to call it, and what to call next.
 | `decode_panic(session_id \| text)` | Guru Meditation, abort, assert, stack overflow, task/interrupt watchdog, heap corruption → kind, registers, symbolized backtrace (addr2line), one-line probable cause. |
 | `test_run(project_dir, scenario_file)` | Build + fresh session + scenario → pass/fail, per-step results, transcript, decoded crash. The tool CI and the benchmark use. |
 | `sensor_set(sensor, values, at_ms)`, `sensor_stream(sensor, waveform, at_ms)` | Change injected sensor data mid-run: constants, synthetic waveforms or recorded CSV. |
+| `gpio_set(pin, level, at_ms)`, `gpio_pulse(pin, width_ms, at_ms, level)` | Drive a pad from outside (button, interrupt line); a pulse goes to the opposite of the pin's declared idle level. |
+| `gpio_read(pin)`, `gpio_trace(pin, cursor)` | A pad's level now, and its level changes with virtual timestamps (e.g. check an LED blinks at 2 Hz). |
+| `display_snapshot(sensor, png)` | What an emulated SSD1306 shows: on/off, inverted, contrast, text art, text read with the Adafruit-GFX 5x7 font, optional PNG. |
 
 The same scenario runner is available without MCP: `docker run ... dryflash[-sensors] test-run <project> <scenario.yaml>`
 (prints JSON; exit code 0 on pass).
 
 **Targets:** `esp32` has everything. `esp32c3` and `esp32s3` support build, run, UART, GDB and crash
-decoding, but no sensors (Espressif's QEMU models I2C only for the esp32).
+decoding, but no sensors, GPIO or display injection (the patches target the esp32 machine).
 
 ## Scenario schema
 
@@ -125,8 +132,14 @@ emulator:
   reboot: false               # false: a guest reset ends the run (crash stays at the end of the log)
   watchdogs: true             # false disables the timer-group watchdogs (like idf.py qemu)
   qemu_args: []               # extra QEMU arguments
+  uart_tcp_port: 5555          # optional: tee UART0 to a TCP listener (see "UART over TCP")
 sensors:                      # esp32 + sensors image only; see "Sensor injection"
   - {model: adxl345, name: accel, address: 0x53, rate_hz: 400, waveform: {z: 1.0}}
+  - {model: max31855, name: tc, bus: spi3, cs: 0, waveform: {tc_c: 31.25, fault: none}}
+  - {model: max6675, name: k, bus: spi2, cs: 1, cs_gpio: 15}   # CS toggled by the firmware on GPIO15
+  - {model: ssd1306, name: oled, address: 0x3C}
+gpio:                         # pads driven from outside; IO_MUX pull-ups are not emulated
+  - {pin: 27, default: 1, name: button}
 fail_on:                      # regexes that fail the run as soon as they appear anywhere
   - 'Guru Meditation Error'   # (default: panics, abort, assert, stack overflow, task WDT, heap corruption)
 steps:                        # run in order; each step has exactly one action
@@ -139,7 +152,16 @@ steps:                        # run in order; each step has exactly one action
   - run_for_ms: 500                     # let virtual time pass
   - sensor_set: {sensor: accel, values: {x: 0.0}, at_ms: 3000}
   - sensor_stream: {sensor: accel, waveform: {x: {type: csv, path: rec.csv, column: x}}}
+  - sensor_set: {sensor: tc, values: {fault: open}, at_ms: 6000}  # probe unplugged
+  - gpio_set: {pin: 27, level: 0, at_ms: 7000}
+  - gpio_pulse: {pin: 27, width_ms: 80, at_ms: 7000}    # press: to the opposite of the default
+  - expect_gpio: {pin: 25, within_ms: 2000, freq_hz: [1.95, 2.05], min_edges: 7, level: 1}
+  - expect_display: {sensor: oled, regex: 'PAIR\n[0-9]{6}'}   # or contains: "text"
 ```
+
+`expect_gpio` runs exactly `within_ms` of virtual time and then checks the pad over that window
+(edge count, frequency from the rising edges, level at the end); `expect_display` waits until the
+text read off the display contains or matches the given string.
 
 `expect` matches only complete lines, so a number is never read before its line has fully
 arrived. For deterministic sensor changes, give `at_ms` (virtual time); "now" on a running
@@ -200,6 +222,16 @@ checks this by running the vibration demo twice and comparing the logs byte for 
 | `mpu6050` | `x`, `y`, `z` (g), `gx`, `gy`, `gz` (°/s), `temp_c` (°C) | WHO_AM_I 0x68; all accelerometer and gyro ranges (ACCEL_CONFIG, GYRO_CONFIG); powers up asleep and reads zeros until the firmware clears SLEEP; DEVICE_RESET self-clears; DATA_RDY always set. Address 0x68 or 0x69. Default rate 1 kHz (the accelerometer output rate). |
 | `generic` | declared per sensor | `registers` (initial contents), `channels` → `{offset, format (u)int8/16/24/32_be/le, scale, bias}`, `stride`, `read_only`, `read_set`. |
 
+| `max31855` | `tc_c`, `cj_c` (°C), `fault` | SPI, 32-bit read-only frame (datasheet 19-5793 Rev 2, Tables 2-5): 14-bit thermocouple, 12-bit reference junction, D16 fault plus OC/SCG/SCV. `fault` takes `none`, `open`, `short_gnd`, `short_vcc`; `open` reads the datasheet's unconnected-input pattern. `tc_c` is what the chip reports (its K-type linearisation is not modelled). Default 10 Hz. |
+| `max6675` | `tc_c` (°C), `fault` | SPI, 16-bit frame (datasheet 19-2235 Rev 1): 12-bit 0.25 °C from 0 to 1023.75, D2 open input. |
+| `ssd1306` | none | I2C OLED controller (datasheet Rev 1.1) at 0x3C/0x3D. The device reports each write transfer whole; dryflash decodes control bytes, the addressing modes, column/page windows, display on/off, invert, contrast, start line, remaps and multiplex ratio into a 128x64 (or 128x32) frame buffer. Read it with `display_snapshot` or `expect_display`. |
+
+SPI sensors take `bus` (`spi2` or `spi3`, ESP-IDF's `SPI2_HOST`/`SPI3_HOST`), `cs` (the
+controller's CS line, 0-2) and optionally `cs_gpio`, a pad that carries chip select instead: Arduino
+libraries (e.g. Adafruit's) toggle CS with `digitalWrite` and leave the controller's CS lines
+enabled but unrouted, so they need `cs_gpio`; ESP-IDF's `spi_master` works with either. A
+`cs_gpio` pad idles high.
+
 **Waveforms** (any channel): a number; `sine {freq_hz, amplitude, offset, phase_deg}`;
 `noise {std, mean, seed}` (a pure function of seed and time, so it is reproducible);
 `step {steps: [[t_s, v], ...]}`; `rotation {rpm, amplitude, harmonics: [[order, amp], ...]}`
@@ -213,17 +245,68 @@ scenario injects a 25 Hz sine on x (expected RMS 0.3536 g), an 1800 rpm imbalanc
 the 3.9 mg quantisation. The scenario then silences x at t = 3 s and checks that a later block
 reads zero.
 
+### GPIO, SPI devices and displays
+
+The sensors image also adds (patches 0009-0018): the esp32 GPIO output/input/interrupt registers,
+`sim-gpio` (pad levels driven from the host on the virtual clock, every pad change reported back),
+`ssi-sim-sensor` (an SPI front end to the same host-fed register file: `frame` mode for read-only
+shift registers, `register` mode with a read bit and auto-increment), a stream mode of
+`i2c-sim-sensor` for display controllers, and fixes to the esp32 SPI controller and interrupt
+matrix found while testing them (docs/UPSTREAM_ISSUES.md items 9-15).
+
+A pad reads its external level while the firmware does not drive it, and the firmware's level
+when it does. In a session with declared gpio pins or sensors, any host interaction with a running
+board waits for the next virtual-time slice stop (at most 100 ms of virtual time later), where the
+VM is paused: "now" then means that stop, so a button press or a `sensor_set` without `at_ms`
+lands at the same instruction on every run.
+
+`examples/verus_pod` exercises all of it: an MPU-6050, an ADS1115 with a Hall sensor, a MAX31855
+on SPI, a pairing button that opens a window with a blinking LED and a 6-digit code on an SSD1306,
+and the Verus JSON wire format on UART0. Its scenario passes twice with byte-identical logs.
+
+### UART over TCP
+
+`emu_start(..., uart_tcp_port=N)` (or `emulator.uart_tcp_port`) tees UART0 to a TCP listener
+inside the container while dryflash keeps owning the console: every client receives the output,
+and bytes a client sends reach the firmware's RX, as `uart_write` does. Writes from the agent and
+from clients are delivered whole, in arrival order. Publish the port when starting the server:
+
+```sh
+claude mcp add dryflash -- docker run -i --rm -p 5555:5555 -v "$(pwd)":/work dryflash-sensors
+```
+
+Then a host program reads the emulated board as it would a USB serial port, e.g. pyserial
+`serial.serial_for_url("socket://localhost:5555")`. Input from a TCP client arrives at a
+host-dependent moment, so a run with a client typing into the board is not byte-reproducible.
+
 ## Limitations
 
 - **No Wi-Fi, BLE, ADC (the on-chip one), I2S, RMT or USB.** Espressif's QEMU doesn't model them;
-  I2S is an unimplemented device. Firmware that waits for Wi-Fi will wait forever.
+  I2S is an unimplemented device. Firmware that waits for Wi-Fi will wait forever. For BLE pods,
+  test the serial fallback path (UART over TCP).
+- **SPI: no DMA, no dummy phase on SPI2/SPI3, no slave mode.** Transfers with DMA return `ESP_OK`
+  and no data, so firmware under test must use `SPI_DMA_DISABLED` (64-byte transactions).
+- **GPIO: no IO_MUX (pull-ups, input enable), no GPIO matrix routing, no NMIs, no RTC IO.** Pin
+  numbers matter for GPIO and for `cs_gpio`, not for routing peripheral signals: an SPI or I2C
+  peripheral works whatever pins the firmware assigns. Declared inputs need an explicit default
+  level instead of a pull-up. Both CPUs' GPIO interrupts share one interrupt-matrix source.
+- **Displays: SSD1306 over I2C only;** text is read for the Adafruit-GFX classic 5x7 font at sizes
+  1-4 (other fonts are only visible in the art and PNG). Scrolling, the charge-pump/oscillator
+  analog settings and the COM pin configuration are accepted but not rendered. The image is
+  oriented as on common modules, whose drivers send A1h/C8h.
+- **Emulated ADCs are sample-and-hold at `rate_hz`.** Firmware that polls at nearly the same rate
+  (e.g. 860 SPS on an ADS1115) occasionally reads one sample twice or skips one, as on hardware
+  in continuous mode; in `verus_pod` this moves `hall_ac_mv` by up to 3 %.
 - **Not cycle-accurate.** With `-icount shift=3` each instruction takes 8 ns of virtual time
   (≈125 MIPS vs ~240 on silicon), so CPU-bound code runs about 2× slower in virtual time than on
   hardware. Peripherals are functional models: an I2C transaction completes in zero virtual time,
   and bus timing, clock stretching and arbitration errors aren't modelled.
 - **Sensors on esp32 only.** It is the only Espressif machine with an I2C controller model.
 - **Deterministic mode costs about 1.6× wall time** (1.59 ± 0.02 wall-seconds per virtual second,
-  N=10, in M1). Determinism holds for a given sequence of tool calls; interactive calls on a
+  N=10, in M1), and more with busy sensors: `verus_pod`, with four devices and GPIO, ran at
+  1.87 ± 0.35 wall s per virtual s (N=10) where the one-sensor demo ran at 0.58 ± 0.03 on the
+  same host. Byte-identical replay held in 24/24 idle runs of `verus_pod` but 15/16 under heavy
+  host load (DECISIONS.md, M5). Determinism holds for a given sequence of tool calls; interactive calls on a
   running emulator (`sensor_set` without `at_ms`, `emu_pause`) happen at host-dependent moments.
 - **RISC-V crash backtraces** are MEPC plus RA only (IDF prints no backtrace there); use
   `gdb_backtrace` on a live session.
@@ -240,7 +323,7 @@ Checked 2026-09-29/30:
 
 | | runs firmware | debugger | crash decoding | sensor data | local / offline |
 |---|---|---|---|---|---|
-| **dryflash** | QEMU (esp32, c3, s3) | GDB/MI | yes | I2C, deterministic | yes (Docker) |
+| **dryflash** | QEMU (esp32, c3, s3) | GDB/MI | yes | I2C + SPI sensors, GPIO, SSD1306; deterministic | yes (Docker) |
 | [ESP-IDF Tools MCP](https://developer.espressif.com/blog/2026/04/esp-idf-tools-mcp-server/) (built into `idf.py`, IDF 6.0+) | no: set_target, build, flash, clean | no | no | no | yes |
 | [Wokwi CLI MCP mode](https://docs.wokwi.com/wokwi-ci/mcp-support) | Wokwi simulator | no | no | Wokwi parts | no: cloud, needs `WOKWI_CLI_TOKEN`; marked experimental |
 | [atomicdog/renode-mcp](https://github.com/atomicdog/renode-mcp) | Renode | no | no | no | yes; thin wrapper (13 tools, one commit) |

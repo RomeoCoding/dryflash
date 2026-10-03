@@ -22,34 +22,41 @@ noted; the workaround is listed instead.
    ARBITRATION or TIME_OUT. It's fine for master-side sensor reads, but it hides timing bugs.
    Not patched.
 
-The following were found in M5 step 0 (2026-10-03); the evidence is in
-`experiments/m5_spike/README.md`, and the patches are pending (M5b).
+The following were found in M5 (2026-10-03); the evidence for 9-14 is in
+`experiments/m5_spike/README.md`. Patches 0009-0018 address them.
 
 9. **`esp32_spi_txrx_buffer()` tests the data byte instead of the loop index**
    (`if (byte < tx_bytes)` / `if (byte < rx_bytes)`). Any received byte whose transmitted
    counterpart is ≥ the rx length is dropped, and the guest reads its own tx data back. An
    Adafruit_MAX31855 read (0xFF filler) returns `ff ff ff ff`. **Already reported and fixed upstream
-   in espressif/qemu PR #144** (QEMU-282, open since 2026-02-28, also covering esp32c3/s3); our fix
-   will credit it.
+   in espressif/qemu PR #144** (QEMU-282, open since 2026-02-28, also covering esp32c3/s3).
+   *Patched* by 0012 for the esp32 only, crediting #144; drop it if #144 merges first.
 10. **Phantom command phase on user SPI transactions** (not found upstream). `SPI_CMD_USR` sends a
     command phase if `SPI_USER.USR_COMMAND` is set **or** `SPI_USER2.COMMAND_BITLEN` is non-zero.
     The TRM (v5.8, §20.3 and `SPI_USER2_REG`) says a phase is enabled only by its control bit,
     and the bit length "is only valid when SPI_USR_COMMAND is set to 1". ESP-IDF's "no command"
     (`usr_command=0`, bitlen field 15) therefore clocks 2 extra bytes, and Arduino (reset bitlen 4)
-    1 extra byte, so every read is shifted. Fix tested in the spike; flash/NVS on SPI1 unaffected.
+    1 extra byte, so every read is shifted. *Patched* by 0011; flash/NVS on SPI1 unaffected.
 11. **The SPI controllers never raise their interrupt.** The IRQ is created and routed to the
     interrupt matrix, but `qemu_set_irq` is never called, and `SPI_SLAVE` always reads
     `TRANS_DONE | TRANS_INTEN`. ESP-IDF's interrupt-driven `spi_device_transmit()` blocks forever;
-    the polling API works.
+    the polling API works. *Patched* by 0013 (with 0018, below).
 12. **SPI DMA is not modelled, and fails silently.** `DMA_CONF`/`DMA_IN_LINK` writes are ignored,
     and the transfer completes with `ESP_OK` while the DMA buffer is never written. Firmware must
-    use `SPI_DMA_DISABLED`.
+    use `SPI_DMA_DISABLED`. Not patched (documented limit).
 13. **SPI2/SPI3 can't take command-line devices** (same cause as item 1: `periph_bus`, all buses
     named `spi`). An SSI device with an unconnected CS input is always selected and never sees a
-    frame start.
+    frame start. *Patched* by 0016 (buses `spi2`/`spi3`, CS wired at machine-init-done).
 14. **The GPIO model only implements `GPIO_STRAP`.** `OUT`, `ENABLE`, `IN`, W1TS/W1TC and pin
     interrupts read 0 or are dropped. A pull-up input reads 0, so an active-low button reads
-    "pressed" forever.
+    "pressed" forever. *Patched* by 0009 (registers) and 0010/0016 (pads driven from the host);
+    IO_MUX pull-ups remain unmodelled.
+15. **The interrupt matrix loses an asserted source when it is re-routed, and shared sources
+    overwrite each other.** It forwarded a source only on a level change, straight to the CPU line.
+    ESP-IDF's `esp_intr_disable`/`esp_intr_enable` re-route the source, so a source that was
+    already high when routed back never interrupted: `spi_device_transmit()` still hung after the
+    SPI IRQ was implemented. Two sources mapped to one CPU interrupt also overwrote each other's
+    level. *Patched* by 0018 (source levels kept, OR per CPU interrupt, re-evaluated on map writes).
 
 ## QEMU core (inherited)
 

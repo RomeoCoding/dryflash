@@ -1,0 +1,61 @@
+# Verus pod acceptance run (M5f). Injected signals and the expected features:
+#   vibration: MPU-6050 x = 1800 rpm imbalance line (30 Hz), 0.1 g peak; z = 1 g gravity
+#              -> vib_rms_g = 0.1/sqrt(2) = 0.0707 g (mean removal takes out gravity)
+#   Hall:      ADS1115 AIN0 = 1.65 V + 50 Hz sine, 6.2 mV peak -> hall_ac_mv = 4.384 mV RMS
+#              (62.5 uV quantisation at +-2.048 V)
+#   temperature: MAX31855 31.25 degC, stepping to 85.0 at 4 s; probe unplugged (fault open) at 6 s
+#   pairing:   button pulse on GPIO27 at 7 s -> LED blinks at 2 Hz, code on the OLED and the log
+name: verus pod features, hot-plug and pairing
+target: esp32
+timeout_s: 240
+emulator:
+  deterministic: true
+gpio:
+  - {pin: 27, default: 1, name: pair_button}
+sensors:
+  - model: mpu6050
+    name: imu
+    rate_hz: 1000
+    waveform:
+      x: {type: rotation, rpm: 1800, amplitude: 0.1}
+      z: 1.0
+  - model: ads1115
+    name: hall
+    address: 0x49
+    rate_hz: 860
+    waveform:
+      ain0: [1.65, {type: sine, freq_hz: 50, amplitude: 0.0062}]
+  - model: max31855
+    name: tc
+    bus: spi3
+    cs: 0
+    waveform:
+      tc_c: {type: step, steps: [[0, 31.25], [4, 85.0]]}
+      cj_c: 24.0
+      fault: {type: step, steps: [[0, none], [6, open]]}
+  - {model: ssd1306, name: oled, address: 0x3C}
+steps:
+  - expect: '\{"type":"module","event":"attached","id":"vib_mpu6050_0x68"'
+    timeout_s: 90
+  - expect: '\{"type":"module","event":"attached","id":"tmp_max31855_cs5"'
+  - expect: '"type":"features"'
+  - expect: '"type":"features"'
+  - expect: '"vib_rms_g":([0-9.]+)'
+    value_range: [0.0690, 0.0725]
+  - expect: '"hall_ac_mv":([0-9.]+)'
+    value_range: [4.20, 4.57]
+  - expect: '"temp_c":([0-9.]+)'
+    value_range: [31.0, 31.5]
+  - expect: '"active_modules":\["cur_ss49e_ads0","tmp_max31855_cs5","vib_mpu6050_0x68"\]'
+  - expect_display: {sensor: oled, contains: VERUS}
+  - expect: '"temp_c":(85\.[0-9]+)'
+    timeout_s: 60
+    value_range: [84.9, 85.1]
+  - expect: '\{"type":"module","event":"detached","id":"tmp_max31855_cs5","module_type":"temperature"'
+    timeout_s: 60
+  - expect: '"features":\{"vib_rms_g":[0-9.]+,"hall_ac_mv":[0-9.]+\},"active_modules":\["cur_ss49e_ads0","vib_mpu6050_0x68"\]'
+  - gpio_pulse: {pin: 27, width_ms: 80, at_ms: 7000}
+  - expect: '"event":"pairing","code":"([0-9]{6})"'
+    timeout_s: 60
+  - expect_gpio: {pin: 25, within_ms: 2000, freq_hz: [1.95, 2.05], min_edges: 7}
+  - expect_display: {sensor: oled, regex: 'PAIR\n[0-9]{6}'}

@@ -1,0 +1,6 @@
+# Emulation build: the ADS1115 sits at 0x49 because the emulated machine has a TMP105 at 0x48.
+CONFIG_VERUS_ADS1115_ADDR=0x49
+# The console carries only the Verus JSON wire format: no ESP-IDF log lines.
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_FREERTOS_HZ=1000
