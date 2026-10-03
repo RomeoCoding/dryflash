@@ -1,0 +1,9 @@
+name: spi/gpio probe (M5 step 0)
+target: esp32
+timeout_s: 120
+emulator:
+  deterministic: true
+  qemu_args: ["-device", "spike-ssi,bus=ssi.3,cs=0,tag=vspi", "-device", "spike-ssi,bus=ssi.2,cs=0,tag=hspi"]
+steps:
+  - expect: 'PROBE_DONE'
+    timeout_s: 60

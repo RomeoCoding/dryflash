@@ -1,0 +1,30 @@
+PROBE start
+B: Arduino-style on SPI3, CS = GPIO5 via gpio_set_level
+B1 read(4) with 0xFF filler: de ad be ef
+B2 read(4) with 0x00 filler: de ad be ef
+B3 1+3 bytes in one CS window (device should give de ad be ef): de de ad be
+B: SPI3 pin reg = 0x00000000
+A: ESP-IDF spi_master on SPI3_HOST, SPI_DMA_DISABLED, CS GPIO5
+A1 polling rx-only: ESP_OK in 14 us
+A1 rx: de ad be ef
+A2 polling full-duplex tx ff ff ff ff: ESP_OK
+A2 rx: de ad be ef
+A3 polling full-duplex tx 80 00 00 00: ESP_OK
+A3 rx: de ad be ef
+A4 queue_trans (interrupt path): ESP_OK
+A4 get_trans_result: ESP_ERR_TIMEOUT after 499307 us
+C: ESP-IDF spi_master on SPI2_HOST, SPI_DMA_CH_AUTO, CS GPIO15
+C1 polling rx 4 bytes (RXDATA): ESP_OK in 17 us
+C1 rx: 00 00 00 00
+C2 polling rx 8 bytes into a DMA buffer prefilled a5: ESP_OK
+C2 rx: a5 a5 a5 a5 a5 a5 a5 a5
+D: GPIO
+D1 after set_level(25, 1): GPIO_OUT=0x00000000 ENABLE=0x00000000 get_level(25)=0
+D2 GPIO27 input pull-up: get_level=0 GPIO_IN=0x00000000
+D3 install_isr_service: ESP_OK
+D3 isr_handler_add(27): ESP_OK
+D3 isr hits after 50 ms: 0
+E: flash on SPI1
+E1 nvs round trip: 0xc0ffee42
+E2 raw write/read 64 bytes at offset 3: match
+PROBE_DONE
