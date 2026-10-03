@@ -5,3 +5,5 @@
 experiments/m1/logs
 bench/results
 .claude
+demo/film/*.mp4
+demo/film/*.blend

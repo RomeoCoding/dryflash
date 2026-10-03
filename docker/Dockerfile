@@ -36,5 +36,6 @@ RUN /opt/uv/bin/uv sync --frozen
 COPY tests ./tests
 COPY scripts ./scripts
 COPY bench ./bench
+COPY demo ./demo
 WORKDIR /opt/dryflash
 CMD ["pytest"]
